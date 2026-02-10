@@ -1,0 +1,19 @@
+aoi_id,Surface 1|Top-Left,Surface 1|Top-Center,Surface 1|Top-Right,Surface 1|Middle-Left,Surface 1|Middle-Center,Surface 1|Middle-Right,Surface 1|Bottom-Left,Surface 1|Bottom-Center,Surface 1|Bottom-Right,Surface 2|Top-Left,Surface 2|Top-Center,Surface 2|Top-Right,Surface 2|Middle-Left,Surface 2|Middle-Center,Surface 2|Middle-Right,Surface 2|Bottom-Left,Surface 2|Bottom-Center,Surface 2|Bottom-Right
+Surface 1|Top-Left,1.0,0.0,0,0.0,1.0,0.0,0.0,0.0,0.0,0,0,0,0.0,0.0,0,1.0,0.0,0
+Surface 1|Top-Center,0.0,0.0,0,0.0,0.0,0.0,0.0,1.0,0.0,0,0,0,0.0,0.0,0,0.0,0.0,0
+Surface 1|Top-Right,0.0,0.0,0,0.0,0.0,0.0,0.0,0.0,0.0,0,0,0,0.0,0.0,0,0.0,0.0,0
+Surface 1|Middle-Left,0.0,0.0,0,3.0,0.0,0.0,5.0,0.0,1.0,0,0,0,0.0,0.0,0,1.0,0.0,0
+Surface 1|Middle-Center,0.0,1.0,0,0.0,8.0,1.0,2.0,1.0,1.0,0,0,0,0.0,0.0,0,1.0,0.0,0
+Surface 1|Middle-Right,0.0,0.0,0,0.0,2.0,10.0,0.0,3.0,1.0,0,0,0,0.0,0.0,0,0.0,0.0,0
+Surface 1|Bottom-Left,1.0,0.0,0,5.0,2.0,1.0,39.0,2.0,0.0,0,0,0,0.0,0.0,0,0.0,0.0,0
+Surface 1|Bottom-Center,1.0,0.0,0,0.0,1.0,1.0,4.0,8.0,2.0,0,0,0,0.0,0.0,0,0.0,0.0,0
+Surface 1|Bottom-Right,0.0,0.0,0,1.0,1.0,3.0,0.0,1.0,9.0,0,0,0,0.0,0.0,0,0.0,0.0,0
+Surface 2|Top-Left,0.0,0.0,0,0.0,0.0,0.0,0.0,0.0,0.0,0,0,0,0.0,0.0,0,0.0,0.0,0
+Surface 2|Top-Center,0.0,0.0,0,0.0,0.0,0.0,0.0,0.0,0.0,0,0,0,0.0,0.0,0,0.0,0.0,0
+Surface 2|Top-Right,0.0,0.0,0,0.0,0.0,0.0,0.0,0.0,0.0,0,0,0,0.0,0.0,0,0.0,0.0,0
+Surface 2|Middle-Left,0.0,0.0,0,0.0,0.0,0.0,0.0,0.0,0.0,0,0,0,0.0,0.0,0,1.0,0.0,0
+Surface 2|Middle-Center,0.0,0.0,0,0.0,0.0,0.0,0.0,0.0,0.0,0,0,0,0.0,1.0,0,0.0,1.0,0
+Surface 2|Middle-Right,0.0,0.0,0,0.0,0.0,0.0,0.0,0.0,0.0,0,0,0,0.0,0.0,0,0.0,0.0,0
+Surface 2|Bottom-Left,0.0,0.0,0,1.0,0.0,0.0,0.0,0.0,1.0,0,0,0,1.0,1.0,0,46.0,0.0,0
+Surface 2|Bottom-Center,0.0,0.0,0,1.0,0.0,0.0,0.0,0.0,0.0,0,0,0,0.0,0.0,0,0.0,8.0,0
+Surface 2|Bottom-Right,0.0,0.0,0,0.0,0.0,0.0,0.0,0.0,0.0,0,0,0,0.0,0.0,0,0.0,0.0,0
