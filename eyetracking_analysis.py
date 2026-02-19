@@ -292,7 +292,7 @@ def create_transition_sequence(surface_data, output_dir="output"):
             axis=1
         )
         if 'surface' in data.columns:
-            data['aoi_id'] = data['surface'] + '|' + data['aoi']
+            data['aoi_id'] = data['surface'] + '|' + data['aoi'].astype(str)
 
     # Sort by time to get temporal order
     fixation_sequence = data.sort_values('world_timestamp').reset_index(drop=True)
@@ -525,29 +525,33 @@ def visualize_fixation_heatmap(aoi_counts_df, output_dir="output", output_filena
     # Create 3x3 grid of counts
     grid = np.zeros((3, 3))
     
-    # Map AOI names to grid positions
+    # Map numeric AOI ids (1-9) to grid positions
     aoi_to_position = {
-        'Top-Left': (0, 0), 'Top-Center': (0, 1), 'Top-Right': (0, 2),
-        'Middle-Left': (1, 0), 'Middle-Center': (1, 1), 'Middle-Right': (1, 2),
-        'Bottom-Left': (2, 0), 'Bottom-Center': (2, 1), 'Bottom-Right': (2, 2)
+        1: (0, 0), 2: (0, 1), 3: (0, 2),
+        4: (1, 0), 5: (1, 1), 6: (1, 2),
+        7: (2, 0), 8: (2, 1), 9: (2, 2)
     }
     
     # Fill grid with counts
     for _, row in aoi_counts_df.iterrows():
-        aoi_name = row['AOI']
+        aoi_value = row['AOI']
         count = row['Fixation_Count']
-        if aoi_name in aoi_to_position:
-            pos = aoi_to_position[aoi_name]
+        try:
+            aoi_value = int(aoi_value)
+        except (TypeError, ValueError):
+            continue
+        if aoi_value in aoi_to_position:
+            pos = aoi_to_position[aoi_value]
             grid[pos[0], pos[1]] = count
     
     # Create heatmap
     plt.figure(figsize=(8, 6))
     sns.heatmap(grid, annot=True, fmt='.0f', cmap='YlOrRd',
-                xticklabels=['Left', 'Center', 'Right'],
-                yticklabels=['Top', 'Middle', 'Bottom'])
+                xticklabels=['1/4/7', '2/5/8', '3/6/9'],
+                yticklabels=['1-3', '4-6', '7-9'])
     plt.title('Fixation Count Heatmap')
-    plt.xlabel('Horizontal Position')
-    plt.ylabel('Vertical Position')
+    plt.xlabel('AOI Column (by id)')
+    plt.ylabel('AOI Row (by id)')
     
     # Save image
     os.makedirs(output_dir, exist_ok=True)
@@ -582,6 +586,134 @@ def visualize_transition_heatmap(matrix, output_dir="output"):
     print("STEP 9: Transition Matrix Heatmap")
     print("="*60)
     print(f"Saved to: {output_dir}/transition_matrix_heatmap.png")
+    plt.close()
+
+
+def visualize_fixation_density(surface_data, output_dir="output", output_filename="fixation_density.png"):
+    """
+    Create a 2D density chart of fixation locations on a surface.
+
+    Args:
+        surface_data: Dataframe with fixation data (expects norm_pos_x, norm_pos_y)
+        output_dir: Directory to save results
+    """
+    data = surface_data[surface_data['on_surf'] == True].copy()
+    if data.empty:
+        print("No on-surface fixations found; skipping density chart.")
+        return
+
+    # Collapse to one row per fixation before plotting
+    data = collapse_fixations(data)
+
+    plt.figure(figsize=(6, 5), facecolor='black')
+    sns.kdeplot(
+        data=data,
+        x='norm_pos_x',
+        y='norm_pos_y',
+        fill=True,
+        levels=50,
+        cmap='mako',
+        bw_adjust=0.8
+    )
+    ax = plt.gca()
+    ax.set_facecolor('black')
+    ax.set_title('Fixation Density', color='white')
+    ax.set_xlabel('Normalized X', color='white')
+    ax.set_ylabel('Normalized Y', color='white')
+    ax.tick_params(colors='white')
+    plt.xlim(0, 1)
+    plt.ylim(0, 1)
+    plt.gca().invert_yaxis()
+    plt.tight_layout()
+
+    os.makedirs(output_dir, exist_ok=True)
+    plt.savefig(os.path.join(output_dir, output_filename), dpi=300)
+    print(f"Saved to: {output_dir}/{output_filename}")
+    plt.close()
+
+
+def visualize_transition_path(sequence_data, output_dir="output", output_filename="transition_path.png"):
+    """
+    Visualize the full fixation sequence across two surfaces as a traced path
+    using absolute normalized coordinates.
+
+    Args:
+        sequence_data: Dataframe with fixation-level rows (expects surface, norm_pos_x, norm_pos_y, world_timestamp)
+        output_dir: Directory to save results
+    """
+    data = sequence_data.copy()
+    if 'surface' not in data.columns or 'norm_pos_x' not in data.columns or 'norm_pos_y' not in data.columns:
+        print("Missing surface or normalized positions for transition path; skipping.")
+        return
+
+    group_cols = ['fixation_id', 'surface'] if 'surface' in data.columns else ['fixation_id']
+    if data.duplicated(subset=group_cols).any():
+        data = collapse_fixations(data, group_cols=group_cols)
+
+    data = data.sort_values('world_timestamp').reset_index(drop=True)
+
+    grid_size = 3
+    gap = 1
+    offsets = {
+        'Surface 1': 0,
+        'Surface 2': grid_size + gap
+    }
+
+    xs = []
+    ys = []
+    labels = []
+    for _, row in data.iterrows():
+        surface = row['surface']
+        if surface not in offsets:
+            continue
+        try:
+            x_norm = float(row['norm_pos_x'])
+            y_norm = float(row['norm_pos_y'])
+        except (TypeError, ValueError):
+            continue
+        if not (0 <= x_norm <= 1 and 0 <= y_norm <= 1):
+            continue
+        x = offsets[surface] + (x_norm * grid_size)
+        y = y_norm * grid_size
+        xs.append(x)
+        ys.append(y)
+        labels.append(row['fixation_id'])
+
+    if len(xs) < 2:
+        print("Not enough fixations for transition path; skipping.")
+        return
+
+    plt.figure(figsize=(9, 4))
+    ax = plt.gca()
+    ax.set_aspect('equal')
+
+    # Draw grids for both surfaces (3x3)
+    for label, x_off in offsets.items():
+        for i in range(grid_size + 1):
+            ax.plot([x_off, x_off + grid_size], [i, i], color='gray', linewidth=0.6)
+            ax.plot([x_off + i, x_off + i], [0, grid_size], color='gray', linewidth=0.6)
+        ax.text(x_off + 1.5, -0.4, label, ha='center', va='top')
+
+    # Draw light connecting segments, then label dots
+    ax.plot(xs, ys, color='tab:orange', linewidth=0.8, alpha=0.35, linestyle='--')
+    ax.scatter(xs, ys, color='tab:orange', s=18, alpha=0.9, zorder=3)
+    for x, y, label in zip(xs, ys, labels):
+        ax.text(x, y, str(label), fontsize=6, ha='center', va='center', color='black', zorder=4)
+    ax.scatter(xs[0], ys[0], color='green', s=30, label='Start')
+    ax.scatter(xs[-1], ys[-1], color='red', s=30, label='End')
+
+    ax.set_xlim(-0.2, offsets['Surface 2'] + grid_size + 0.2)
+    ax.set_ylim(-0.8, grid_size + 0.2)
+    ax.invert_yaxis()
+    ax.set_xticks([])
+    ax.set_yticks([])
+    ax.set_title('Full Fixation Transition Path')
+    ax.legend(loc='upper right', frameon=False)
+
+    os.makedirs(output_dir, exist_ok=True)
+    plt.tight_layout()
+    plt.savefig(os.path.join(output_dir, output_filename), dpi=300)
+    print(f"Saved to: {output_dir}/{output_filename}")
     plt.close()
 
 
@@ -663,6 +795,13 @@ def main():
     # STEP 9: Visualize transition heatmap
     visualize_transition_heatmap(matrix, output_dir)
 
+    # STEP 10: Visualize fixation density per surface
+    visualize_fixation_density(surface1, output_dir, output_filename="fixation_density_surface1.png")
+    visualize_fixation_density(surface2, output_dir, output_filename="fixation_density_surface2.png")
+
+    # STEP 11: Visualize full transition path across both surfaces
+    visualize_transition_path(combined, output_dir, output_filename="transition_path.png")
+
     # EXTRA: Analyze cross-screen transitions (counts, durations, path info)
     cross_details = analyze_cross_screen_transitions(transitions, output_dir)
     if cross_details is not None:
@@ -683,6 +822,9 @@ def main():
     print("  - fixation_heatmap_surface1.png")
     print("  - fixation_heatmap_surface2.png")
     print("  - transition_matrix_heatmap.png")
+    print("  - fixation_density_surface1.png")
+    print("  - fixation_density_surface2.png")
+    print("  - transition_path.png")
 
 
 if __name__ == "__main__":
