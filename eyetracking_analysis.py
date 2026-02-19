@@ -49,7 +49,7 @@ def load_data(surface1_path, surface2_path):
 
 # Counting fixations on each screen and overlaps
 
-def analyze_screen_coverage(surface1, surface2):
+def analyze_screen_coverage(surface1, surface2, all_fixations=None):
     """
     Analyze which fixations landed on which screen
     
@@ -62,10 +62,14 @@ def analyze_screen_coverage(surface1, surface2):
     fixations_on_s2 = surface2[surface2['on_surf'] == True]['fixation_id'].unique()
     
     # All fixations including ones that don't land on any surfaces
-    all_fixations = pd.concat([surface1['fixation_id'], 
-                               surface2['fixation_id']]).unique()
+    if all_fixations is not None and 'fixation_id' in all_fixations.columns:
+        all_fixations = all_fixations['fixation_id'].unique()
+    else:
+        all_fixations = pd.concat([surface1['fixation_id'], 
+                                   surface2['fixation_id']]).unique()
+        print("Warning: 'all_fixations' not provided; 'neither screen' is based only on surface files.")
     
-    # Set operations to find unique and overlapping fixations
+    # Find unique and overlapping fixations
     only_s1 = set(fixations_on_s1) - set(fixations_on_s2)
     only_s2 = set(fixations_on_s2) - set(fixations_on_s1)
     both_screens = set(fixations_on_s1) & set(fixations_on_s2)
@@ -100,9 +104,9 @@ def assign_aoi(x, y):
         y: vertical position (0-1)
     
     Returns:
-        aoi_name: string like "Top-Left" or "Middle-Center"
+        aoi_id: integer 1-9 (row-major: top-left=1 ... bottom-right=9)
     """
-    # Determine column (0=left, 1=center, 2=right)
+    # columns (0=left, 1=center, 2=right)
     if x < 0.333:
         col = 0
     elif x < 0.667:
@@ -110,7 +114,7 @@ def assign_aoi(x, y):
     else:
         col = 2
     
-    # Determine row (0=top, 1=middle, 2=bottom)
+    # rows (0=top, 1=middle, 2=bottom)
     if y < 0.333:
         row = 0
     elif y < 0.667:
@@ -118,14 +122,37 @@ def assign_aoi(x, y):
     else:
         row = 2
     
-    # Name grid positions
-    names = [
-        ['Top-Left', 'Top-Center', 'Top-Right'],
-        ['Middle-Left', 'Middle-Center', 'Middle-Right'],
-        ['Bottom-Left', 'Bottom-Center', 'Bottom-Right']
+    # Numeric grid positions (row-major)
+    ids = [
+        [1, 2, 3],
+        [4, 5, 6],
+        [7, 8, 9]
     ]
     
-    return names[row][col]
+    return ids[row][col]
+
+
+def collapse_fixations(surface_data, group_cols=None):
+    """
+    Collapse multiple rows per fixation into one row using sensible aggregates.
+    """
+    if group_cols is None:
+        group_cols = ['fixation_id']
+        if 'surface' in surface_data.columns:
+            group_cols = ['fixation_id', 'surface']
+
+    agg_map = {}
+    for col in surface_data.columns:
+        if col in group_cols:
+            continue
+        if col in ['norm_pos_x', 'norm_pos_y']:
+            agg_map[col] = 'mean'
+        elif col == 'world_timestamp':
+            agg_map[col] = 'min'
+        else:
+            agg_map[col] = 'first'
+
+    return surface_data.groupby(group_cols, as_index=False).agg(agg_map)
 
 
 def create_aoi_data(surface_data):
@@ -140,6 +167,8 @@ def create_aoi_data(surface_data):
     """
     # Only consider the fixations that landed on the surface
     data = surface_data[surface_data['on_surf'] == True].copy()
+    # Collapse multiple rows per fixation to a single fixation-level row
+    data = collapse_fixations(data)
     
     # Assign aoi to each fixation using the normalized x/y coordinates
     data['aoi'] = data.apply(
@@ -162,16 +191,18 @@ def create_aoi_data_for_surface(surface_data, surface_label):
     Wrapper to create AOI assignments and tag rows with surface label
     Returns dataframe with columns: all original + 'surface' and 'aoi_id' (surface-aware)
     """
-    df = create_aoi_data(surface_data)
+    labeled = surface_data.copy()
+    labeled['surface'] = surface_label
+    df = create_aoi_data(labeled)
     df['surface'] = surface_label
     # create surface-aware AOI id used for cross-screen transitions
-    df['aoi_id'] = df['surface'] + '|' + df['aoi']
+    df['aoi_id'] = df['surface'] + '|' + df['aoi'].astype(str)
     return df
 
 
 # Fixations per aoi
 
-def count_fixations_per_aoi(surface_data, output_dir="output"):
+def count_fixations_per_aoi(surface_data, output_dir="output", output_filename="aoi_fixation_counts.csv"):
     """
     Count how many unique fixations landed in each AOI
     
@@ -196,17 +227,14 @@ def count_fixations_per_aoi(surface_data, output_dir="output"):
     
     # Save to CSV
     os.makedirs(output_dir, exist_ok=True)
-    aoi_counts_df.to_csv(os.path.join(output_dir, 'aoi_fixation_counts.csv'), index=False)
-    print(f"\nSaved to: {output_dir}/aoi_fixation_counts.csv")
+    aoi_counts_df.to_csv(os.path.join(output_dir, output_filename), index=False)
+    print(f"\nSaved to: {output_dir}/{output_filename}")
     
     return aoi_counts_df
 
 
-# ============================================================================
-# STEP 5: Calculate Total Duration Per AOI
-# ============================================================================
-
-def calculate_aoi_durations(surface_data, output_dir="output"):
+#Total durations per aoi
+def calculate_aoi_durations(surface_data, output_dir="output", output_filename="aoi_durations.csv"):
     """
     Sum up how long people looked at each AOI
     
@@ -234,16 +262,13 @@ def calculate_aoi_durations(surface_data, output_dir="output"):
     
     # Save to CSV
     os.makedirs(output_dir, exist_ok=True)
-    aoi_durations_df.to_csv(os.path.join(output_dir, 'aoi_durations.csv'), index=False)
-    print(f"\nSaved to: {output_dir}/aoi_durations.csv")
+    aoi_durations_df.to_csv(os.path.join(output_dir, output_filename), index=False)
+    print(f"\nSaved to: {output_dir}/{output_filename}")
     
     return aoi_durations_df
 
 
-# ============================================================================
-# STEP 6: Create Transition Sequence
-# ============================================================================
-
+# Transition sequence (how each gaze moves)
 def create_transition_sequence(surface_data, output_dir="output"):
     """
     Track how gaze moves from one AOI to another over time
@@ -255,15 +280,34 @@ def create_transition_sequence(surface_data, output_dir="output"):
     Returns:
         Dataframe with transitions
     """
-    # For each fixation, get its first AOI and timestamp
-    # This removes duplicate entries for the same fixation
-    fixation_sequence = surface_data.sort_values('world_timestamp').groupby('fixation_id').first().reset_index()
+    data = surface_data.copy()
+    group_cols = ['fixation_id']
+    if 'surface' in data.columns:
+        group_cols = ['fixation_id', 'surface']
+
+    if data.duplicated(subset=group_cols).any():
+        data = collapse_fixations(data, group_cols=group_cols)
+        data['aoi'] = data.apply(
+            lambda row: assign_aoi(row['norm_pos_x'], row['norm_pos_y']),
+            axis=1
+        )
+        if 'surface' in data.columns:
+            data['aoi_id'] = data['surface'] + '|' + data['aoi']
 
     # Sort by time to get temporal order
-    fixation_sequence = fixation_sequence.sort_values('world_timestamp').reset_index(drop=True)
+    fixation_sequence = data.sort_values('world_timestamp').reset_index(drop=True)
 
     # Determine AOI column to use (prefer surface-aware 'aoi_id')
     aoi_col = 'aoi_id' if 'aoi_id' in fixation_sequence.columns else 'aoi'
+
+    # Save full fixation sequence (entire ordered path)
+    os.makedirs(output_dir, exist_ok=True)
+    seq_cols = ['fixation_id', aoi_col, 'world_timestamp']
+    seq_cols = [c for c in seq_cols if c in fixation_sequence.columns]
+    fixation_sequence[seq_cols].to_csv(
+        os.path.join(output_dir, 'full_fixation_sequence.csv'),
+        index=False
+    )
 
     # Build next-fixation columns by shifting
     fixation_sequence['next_fixation_id'] = fixation_sequence['fixation_id'].shift(-1)
@@ -274,7 +318,7 @@ def create_transition_sequence(surface_data, output_dir="output"):
     transitions = fixation_sequence[fixation_sequence['next_aoi'].notna()].copy()
 
     # Create transition pairs (label from selected AOI column to next)
-    transitions['transition'] = transitions[aoi_col].astype(str) + ' → ' + transitions['next_aoi'].astype(str)
+    transitions['transition'] = transitions[aoi_col].astype(str) + ' -> ' + transitions['next_aoi'].astype(str)
 
     # Compute transition duration (time between fixation timestamps)
     # world_timestamp may be in seconds or ms depending on source; preserve units
@@ -303,13 +347,11 @@ def create_transition_sequence(surface_data, output_dir="output"):
     out_cols = [c for c in out_cols if c in transitions.columns]
     transitions[out_cols].to_csv(os.path.join(output_dir, 'transition_sequence.csv'), index=False)
     print(f"\nSaved to: {output_dir}/transition_sequence.csv")
+    print(f"Saved to: {output_dir}/full_fixation_sequence.csv")
 
     return transitions
 
 
-# ============================================================================
-# STEP 7: Create Transition Matrix
-# ============================================================================
 
 def create_transition_matrix(transitions, output_dir="output"):
     """
@@ -323,33 +365,26 @@ def create_transition_matrix(transitions, output_dir="output"):
         Transition matrix
     """
     # Count occurrences of each transition
-    # The incoming transitions dataframe may use a surface-aware AOI column (like 'aoi_id')
     # Determine which AOI column is present
     from_col = 'aoi'
     if 'aoi_id' in transitions.columns:
         from_col = 'aoi_id'
     transition_counts = transitions.groupby([from_col, 'next_aoi']).size().reset_index(name='count')
     
-    # Pivot to matrix format
     matrix = transition_counts.pivot(index=from_col, columns='next_aoi', values='count')
     
-    # Fill missing values with 0
     matrix = matrix.fillna(0)
     
     # Make sure all 9 AOIs are in the matrix (even if count is 0)
     # If using surface-aware AOIs, ensure both surfaces' AOIs are present
     if from_col == 'aoi_id':
-        base_aois = ['Top-Left', 'Top-Center', 'Top-Right',
-                     'Middle-Left', 'Middle-Center', 'Middle-Right',
-                     'Bottom-Left', 'Bottom-Center', 'Bottom-Right']
+        base_aois = ['1', '2', '3', '4', '5', '6', '7', '8', '9']
         all_aois = []
         for s in ['Surface 1', 'Surface 2']:
             for b in base_aois:
                 all_aois.append(f"{s}|{b}")
     else:
-        all_aois = ['Top-Left', 'Top-Center', 'Top-Right',
-                    'Middle-Left', 'Middle-Center', 'Middle-Right',
-                    'Bottom-Left', 'Bottom-Center', 'Bottom-Right']
+        all_aois = [1, 2, 3, 4, 5, 6, 7, 8, 9]
 
     for aoi in all_aois:
         if aoi not in matrix.index:
@@ -441,7 +476,7 @@ def save_cross_screen_summary_and_visuals(cross, summary, output_dir="output"):
 
     # Bar chart: counts per from->to pair
     pair_counts = cross.groupby(['from_surface', 'to_surface']).size().reset_index(name='count')
-    pair_counts['pair'] = pair_counts['from_surface'] + ' → ' + pair_counts['to_surface']
+    pair_counts['pair'] = pair_counts['from_surface'] + ' -> ' + pair_counts['to_surface']
     plt.figure(figsize=(8, 4))
     sns.barplot(data=pair_counts, x='pair', y='count', palette='muted')
     plt.title('Cross-Screen Transition Counts')
@@ -466,7 +501,7 @@ def save_cross_screen_summary_and_visuals(cross, summary, output_dir="output"):
     # Timeline scatter: timestamp vs duration, colored by direction
     if 'world_timestamp' in cross.columns:
         plt.figure(figsize=(10, 3))
-        cross['pair'] = cross['from_surface'] + ' → ' + cross['to_surface']
+        cross['pair'] = cross['from_surface'] + ' -> ' + cross['to_surface']
         sns.scatterplot(data=cross, x='world_timestamp', y='transition_duration', hue='pair', s=50)
         plt.title('Cross-Screen Transitions Timeline')
         plt.xlabel('World Timestamp')
@@ -479,11 +514,7 @@ def save_cross_screen_summary_and_visuals(cross, summary, output_dir="output"):
     print(f"Saved cross-screen summary and visualizations to: {output_dir}")
 
 
-# ============================================================================
-# STEP 8: Visualize - Heatmap of Fixation Counts
-# ============================================================================
-
-def visualize_fixation_heatmap(aoi_counts_df, output_dir="output"):
+def visualize_fixation_heatmap(aoi_counts_df, output_dir="output", output_filename="fixation_heatmap.png"):
     """
     Create a visual grid showing where people looked most
     
@@ -520,17 +551,14 @@ def visualize_fixation_heatmap(aoi_counts_df, output_dir="output"):
     
     # Save image
     os.makedirs(output_dir, exist_ok=True)
-    plt.savefig(os.path.join(output_dir, 'fixation_heatmap.png'), dpi=300, bbox_inches='tight')
+    plt.savefig(os.path.join(output_dir, output_filename), dpi=300, bbox_inches='tight')
     print("\n" + "="*60)
     print("STEP 8: Fixation Heatmap")
     print("="*60)
-    print(f"Saved to: {output_dir}/fixation_heatmap.png")
+    print(f"Saved to: {output_dir}/{output_filename}")
     plt.close()
 
 
-# ============================================================================
-# STEP 9: Visualize - Transition Matrix Heatmap
-# ============================================================================
 
 def visualize_transition_heatmap(matrix, output_dir="output"):
     """
@@ -557,9 +585,6 @@ def visualize_transition_heatmap(matrix, output_dir="output"):
     plt.close()
 
 
-# ============================================================================
-# MAIN EXECUTION
-# ============================================================================
 
 def main():
     """
@@ -575,6 +600,7 @@ def main():
     
     surface1_path = os.path.join(parent_dir, "example_data/Mateo_data/exports/000/surfaces/fixations_on_surface_Surface 1.csv")
     surface2_path = os.path.join(parent_dir, "example_data/Mateo_data/exports/000/surfaces/fixations_on_surface_Surface 2.csv")
+    all_fixations_path = os.path.join(parent_dir, "example_data/Mateo_data/exports/000/fixations.csv")
     output_dir = os.path.join(script_dir, "output")
     
     # STEP 1: Load data
@@ -588,23 +614,40 @@ def main():
         return
     
     # STEP 2: Analyze screen coverage
-    coverage = analyze_screen_coverage(surface1, surface2)
+    all_fixations = None
+    if os.path.exists(all_fixations_path):
+        all_fixations = pd.read_csv(all_fixations_path)
+    else:
+        print(f"Note: all-fixations file not found at: {all_fixations_path}")
+    coverage = analyze_screen_coverage(surface1, surface2, all_fixations)
 
     # STEP 3: Create AOI assignments for both screens (surface-aware)
     screen1_aoi = create_aoi_data_for_surface(surface1, "Surface 1")
     screen2_aoi = create_aoi_data_for_surface(surface2, "Surface 2")
 
     # STEP 4: Count fixations per AOI for each surface and save separate files
-    aoi_counts_s1 = count_fixations_per_aoi(screen1_aoi, output_dir)
-    aoi_counts_s1.to_csv(os.path.join(output_dir, 'aoi_fixation_counts_surface1.csv'), index=False)
-    aoi_counts_s2 = count_fixations_per_aoi(screen2_aoi, output_dir)
-    aoi_counts_s2.to_csv(os.path.join(output_dir, 'aoi_fixation_counts_surface2.csv'), index=False)
+    aoi_counts_s1 = count_fixations_per_aoi(
+        screen1_aoi,
+        output_dir,
+        output_filename="aoi_fixation_counts_surface1.csv"
+    )
+    aoi_counts_s2 = count_fixations_per_aoi(
+        screen2_aoi,
+        output_dir,
+        output_filename="aoi_fixation_counts_surface2.csv"
+    )
 
     # STEP 5: Calculate durations per AOI (per surface)
-    aoi_durations_s1 = calculate_aoi_durations(screen1_aoi, output_dir)
-    aoi_durations_s1.to_csv(os.path.join(output_dir, 'aoi_durations_surface1.csv'), index=False)
-    aoi_durations_s2 = calculate_aoi_durations(screen2_aoi, output_dir)
-    aoi_durations_s2.to_csv(os.path.join(output_dir, 'aoi_durations_surface2.csv'), index=False)
+    aoi_durations_s1 = calculate_aoi_durations(
+        screen1_aoi,
+        output_dir,
+        output_filename="aoi_durations_surface1.csv"
+    )
+    aoi_durations_s2 = calculate_aoi_durations(
+        screen2_aoi,
+        output_dir,
+        output_filename="aoi_durations_surface2.csv"
+    )
 
     # STEP 6: Create transition sequence across both surfaces
     combined = pd.concat([screen1_aoi, screen2_aoi]).sort_values('world_timestamp')
@@ -614,8 +657,8 @@ def main():
     matrix = create_transition_matrix(transitions, output_dir)
 
     # STEP 8: Visualize fixation heatmaps per surface
-    visualize_fixation_heatmap(aoi_counts_s1, output_dir)
-    visualize_fixation_heatmap(aoi_counts_s2, output_dir)
+    visualize_fixation_heatmap(aoi_counts_s1, output_dir, output_filename="fixation_heatmap_surface1.png")
+    visualize_fixation_heatmap(aoi_counts_s2, output_dir, output_filename="fixation_heatmap_surface2.png")
 
     # STEP 9: Visualize transition heatmap
     visualize_transition_heatmap(matrix, output_dir)
@@ -631,11 +674,14 @@ def main():
     print("="*60)
     print(f"All results saved to: {output_dir}/")
     print("Generated files:")
-    print("  - aoi_fixation_counts.csv")
-    print("  - aoi_durations.csv")
+    print("  - aoi_fixation_counts_surface1.csv")
+    print("  - aoi_fixation_counts_surface2.csv")
+    print("  - aoi_durations_surface1.csv")
+    print("  - aoi_durations_surface2.csv")
     print("  - transition_sequence.csv")
     print("  - transition_matrix.csv")
-    print("  - fixation_heatmap.png")
+    print("  - fixation_heatmap_surface1.png")
+    print("  - fixation_heatmap_surface2.png")
     print("  - transition_matrix_heatmap.png")
 
 
