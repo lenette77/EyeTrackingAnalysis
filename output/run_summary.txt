@@ -1,0 +1,41 @@
+Eye-tracking integrated script summary
+
+What changed
+- Added continuous gaze preprocessing (confidence filter, interpolation, time alignment).
+- Added matrix-profile scan pattern extraction using stumpy.
+- Added scan pattern plots (grid, faded grid, time series).
+- Added DTW averaging of pattern segments (with safe fallback and length trimming).
+- Saved DTW averages as .npy files.
+
+Data used (from this workspace)
+- Fixation AOI/transition analysis:
+  - Week1 02_04_26/example_data/Mateo_data/exports/000/surfaces/fixations_on_surface_Surface 1.csv
+  - Week1 02_04_26/example_data/Mateo_data/exports/000/surfaces/fixations_on_surface_Surface 2.csv
+- Scan pattern extraction (continuous gaze):
+  - Week1 02_04_26/example_data/Mateo_data/exports/000/gaze_positions.csv
+
+Output legend (Eyetracking_Analysis/output)
+- scan_patterns.csv: one row per extracted pattern (id, prototype index, occurrence count, area).
+- scan_patterns.png: grid of raw pattern trajectories (each subplot is a pattern).
+- scan_patterns_fade.png: same grid, but point opacity increases over time to show motion direction.
+- scan_patterns_time_series.png: X/Y time series with colored bands showing where patterns occur.
+- scan_patterns_dtw_xavg.npy: DTW-aligned average X trajectory per pattern.
+- scan_patterns_dtw_yavg.npy: DTW-aligned average Y trajectory per pattern.
+- full_fixation_sequence.csv: fixation order with AOI labels over time.
+- transition_sequence.csv: AOI-to-AOI transitions with timestamps and durations.
+- transition_matrix.csv: counts of AOI transitions (matrix form).
+- transition_matrix_heatmap.png: heatmap view of the transition matrix.
+- aoi_fixation_counts_surface1.csv/.csv: counts of fixations per AOI for each surface.
+- aoi_durations_surface1.csv/.csv: total fixation duration per AOI for each surface.
+- fixation_heatmap_surface1.png/.png: AOI heatmap for each surface.
+- fixation_density_surface1.png/.png: continuous density of fixation points on each surface.
+- transition_path.png: full two-surface transition path in normalized grid space.
+- cross_screen_transitions.csv: transitions that cross between screens.
+- cross_screen_summary.json/.csv: summary stats for cross-screen transitions.
+- cross_transition_counts.png: bar chart of cross-screen transition counts.
+- cross_transition_duration_hist.png: histogram of cross-screen transition durations.
+- cross_transition_timeline.png: timeline of cross-screen transitions.
+
+Notes
+- Pattern extraction requires stumpy; DTW averaging requires tslearn.
+- If those packages are missing, the script skips those steps with a message.

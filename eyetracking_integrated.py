@@ -9,6 +9,23 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 import os
 import warnings
+
+try:
+    import stumpy
+except ImportError:
+    stumpy = None
+
+try:
+    from tslearn.metrics import dtw_path
+except ImportError:
+    dtw_path = None
+
+try:
+    import matplotlib.animation as animation
+    import matplotlib.cm as cm
+except ImportError:
+    animation = None
+    cm = None
 warnings.filterwarnings('ignore')
 
 # ========== YOUR ORIGINAL FUNCTIONS (unchanged) ==========
@@ -112,110 +129,263 @@ def create_aoi_data(surface_data):
 # all visualize_* functions exactly as before. To save space, assume they're here unchanged.]
 
 # ========== NEW: INTEGRATED FROM IPYNB ==========
-def sliding_window_gaze(gaze_xy, window_length=35, stride=10):
-    """Extract sliding windows from gaze X,Y trajectories (from ipynb). 
-    window_length=35 ~0.7s @50Hz; adjust for your 60Hz: ~42."""
-    n_samples = len(gaze_xy)
-    n_windows = (n_samples - window_length) // stride + 1
-    windows = []
-    
-    for i in range(n_windows):
-        start = i * stride
-        window = gaze_xy.iloc[start:start + window_length].values  # Shape: (window_length, 2)
-        windows.append(window)
-    
-    return np.array(windows)  # Shape: (n_windows, window_length, 2)
-
-def compute_distance_profiles(windows):
-    """Vectorized distance profiles — much faster than nested loops."""
-    n = len(windows)
-    # Flatten each window to 1D: (n_windows, window_length * 2)
-    flat = windows.reshape(n, -1).astype(np.float64)
-    
-    # Pairwise Euclidean distances using broadcasting
-    diff = flat[:, np.newaxis, :] - flat[np.newaxis, :, :]  # (n, n, features)
-    dist_matrix = np.sqrt((diff ** 2).sum(axis=2))           # (n, n)
-    profile_sums = dist_matrix.sum(axis=1)                   # Uniqueness score per window
-    return dist_matrix, profile_sums
+def load_gaze_positions(path):
+    """Load continuous gaze positions (e.g., gaze_positions.csv)."""
+    try:
+        df = pd.read_csv(path)
+        print(f"Loaded gaze positions: {df.shape}")
+        return df
+    except FileNotFoundError:
+        print(f"Gaze file not found: {path}")
+        return None
 
 
-def extract_patterns(windows, num_patterns=10, percentile_start=0.05, min_occurrences=5):
-    """Iterative pattern extraction — fixed empty-array guard."""
-    dist_matrix, _ = compute_distance_profiles(windows)
-    n_windows = len(windows)
-    available = np.arange(n_windows)
+def preprocess_gaze_positions(df, time_col='gaze_timestamp', x_col='norm_pos_x', y_col='norm_pos_y',
+                              confidence_col='confidence', confidence_min=0.6):
+    """Basic cleanup + time alignment for continuous gaze data."""
+    data = df.copy()
+    for col in [time_col, x_col, y_col]:
+        if col not in data.columns:
+            raise ValueError(f"Missing required column: {col}")
 
+    if confidence_col in data.columns:
+        data.loc[data[confidence_col] < confidence_min, [x_col, y_col]] = np.nan
+
+    data[[x_col, y_col]] = data[[x_col, y_col]].apply(pd.to_numeric, errors='coerce')
+    data[[x_col, y_col]] = data[[x_col, y_col]].interpolate(limit_direction='both')
+
+    data[time_col] = pd.to_numeric(data[time_col], errors='coerce')
+    data = data.dropna(subset=[time_col]).reset_index(drop=True)
+    data['rec_time_s'] = data[time_col] - data[time_col].min()
+
+    return data
+
+
+def compute_diffwhere(tx, ty, diff=2, quantile=0.85):
+    """Select candidate indices based on large changes in X/Y."""
+    xdiff = tx[diff:] - tx[:-diff]
+    ydiff = ty[diff:] - ty[:-diff]
+    xwhere = np.where(np.abs(xdiff) > np.quantile(np.abs(xdiff), quantile))[0]
+    ywhere = np.where(np.abs(ydiff) > np.quantile(np.abs(ydiff), quantile))[0]
+    return np.union1d(xwhere, ywhere)
+
+
+def extract_matrix_profile_patterns(tx, ty, rec_time_s, m=95, k=10, diff=2, q_min=0.001, q_max=0.01,
+                                    min_masks=5):
+    """Notebook-style matrix profile pattern extraction using stumpy.mass."""
+    if stumpy is None:
+        print("stumpy is not installed; skipping matrix profile pattern extraction.")
+        return None
+
+    pad_width = (0, int(m * np.ceil(tx.shape[0] / m) - tx.shape[0]))
+    tx_padded = np.pad(tx, pad_width, mode='constant', constant_values=np.nan)
+    ty_padded = np.pad(ty, pad_width, mode='constant', constant_values=np.nan)
+    n_padded = tx_padded.shape[0]
+
+    diffwhere = compute_diffwhere(tx, ty, diff=diff)
+    diffwhere = diffwhere[diffwhere < n_padded - m + 1]
+    if len(diffwhere) == 0:
+        print("No candidate indices found for matrix profile.")
+        return None
+
+    dx = np.empty((len(diffwhere), tx.shape[0] - m + 1), dtype=np.float64)
+    dy = np.empty((len(diffwhere), ty.shape[0] - m + 1), dtype=np.float64)
+
+    for i, start in enumerate(diffwhere):
+        stop = start + m
+        sx = tx_padded[start:stop]
+        sy = ty_padded[start:stop]
+        dx[i, :] = stumpy.mass(sx, tx, normalize=False, p=2.0)
+        dy[i, :] = stumpy.mass(sy, ty, normalize=False, p=2.0)
+
+    d = np.sqrt(dx ** 2 + dy ** 2)
+    d_plot = d.copy()
+
+    snippets_x = np.empty((k, m), dtype=np.float64)
+    snippets_y = np.empty((k, m), dtype=np.float64)
+    snippets_indices = np.empty(k, dtype=np.int64)
+    snippets_profiles = np.empty((k, dx.shape[-1]), dtype=np.float64)
+    snippets_areas = np.empty(k, dtype=np.float64)
+
+    indices = diffwhere
+    mask = np.full(tx.shape, -np.inf)
+    tx_process = tx.copy()
+    ty_process = ty.copy()
+    mask_list = []
     patterns = []
 
-    for k in range(num_patterns):
-        # Guard: stop if not enough windows left
-        if len(available) < min_occurrences:
-            print(f"  Stopped at pattern {k+1}: only {len(available)} windows remaining.")
+    count = 0
+    while count < k:
+        q_threshold = (q_max - q_min) / (k - 1) * count + q_min
+        profile_areas = np.nansum(d_plot, axis=1)
+        valid = profile_areas[profile_areas < np.inf]
+        if len(valid) == 0:
             break
 
-        percentile = (percentile_start + k * 0.005) * 100  # e.g. 5th → 10th over 10 iters
+        idx = np.where(profile_areas == max(valid))[0][0]
 
-        # Uniqueness scores for remaining windows only
-        sub_matrix = dist_matrix[np.ix_(available, available)]
-        profile_sums = sub_matrix.sum(axis=1)
+        mask_num = 1
+        prev_maskidx = None
+        for maskidx in np.where(d_plot[idx] <= np.nanquantile(d_plot[idx], q_threshold))[0]:
+            if prev_maskidx is None:
+                prev_maskidx = maskidx
+            elif maskidx - prev_maskidx > 1:
+                mask_num += 1
+                prev_maskidx = maskidx
+            else:
+                prev_maskidx = maskidx
 
-        # Most unique remaining window
-        proto_local_idx = np.argmax(profile_sums)
-        proto_global_idx = available[proto_local_idx]
+        if mask_num < min_masks:
+            d_plot[np.array([np.max(mask[index:index + m]) >= 0 for index in indices]), :] = np.nan
+            d_plot[:, np.isnan(tx_process[:-m + 1])] = np.nan
+            d_plot[np.where(np.abs(indices - indices[idx]) < int(m / 2))[0], :] = np.nan
+            continue
 
-        # Find similar occurrences (low distance to prototype)
-        proto_distances = dist_matrix[proto_global_idx, available]
-        thresh = np.percentile(proto_distances, percentile)
-        occ_local = np.where(proto_distances <= thresh)[0]
-        occ_global = available[occ_local]
+        snippets_x[count] = tx[indices[idx]: indices[idx] + m]
+        snippets_y[count] = ty[indices[idx]: indices[idx] + m]
+        snippets_indices[count] = indices[idx]
+        snippets_profiles[count] = d[idx]
+        snippets_areas[count] = np.sum(d[idx])
+        mask[indices[idx]: indices[idx] + m] = count
 
-        if len(occ_global) >= min_occurrences:
-            patterns.append({
-                'pattern_id': k + 1,
-                'proto_window_idx': proto_global_idx,
-                'prototype': windows[proto_global_idx],
-                'n_occurrences': len(occ_global),
-                'occurrence_indices': occ_global
-            })
-            print(f"  Pattern {k+1}: proto_idx={proto_global_idx}, {len(occ_global)} occurrences")
-            available = np.setdiff1d(available, occ_global)  # Mask occurrences
-        else:
-            print(f"  Pattern {k+1}: skipped (only {len(occ_global)} occurrences < min {min_occurrences})")
+        for maskidx in np.where(d_plot[idx] <= np.nanquantile(d_plot[idx], 0.010))[0]:
+            mask[(maskidx):(maskidx + m)] = count
+            tx_process[(maskidx - int(m / 2)):(maskidx + m)] = np.nan
+            ty_process[(maskidx - int(m / 2)):(maskidx + m)] = np.nan
 
-    print(f"Extracted {len(patterns)} scan patterns total.")
-    return pd.DataFrame(patterns), np.concatenate([p['occurrence_indices'] for p in patterns]) if patterns else np.array([])
+        mask_list.append(np.append(np.where(d_plot[idx] <= np.nanquantile(d_plot[idx], 0.010))[0], indices[idx]))
+
+        patterns.append({
+            'pattern_id': count + 1,
+            'proto_index': int(indices[idx]),
+            'n_occurrences': int(np.sum(mask == count)),
+            'area': float(snippets_areas[count])
+        })
+
+        d_plot[np.array([np.max(mask[index:index + m]) >= 0 for index in indices]), :] = np.nan
+        d_plot[:, np.isnan(tx_process[:-m + 1])] = np.nan
+        d_plot[np.where(np.abs(indices - indices[idx]) < int(m / 2))[0], :] = np.nan
+
+        count += 1
+
+    patterns_df = pd.DataFrame(patterns)
+    return {
+        'patterns_df': patterns_df,
+        'snippets_x': snippets_x[:count],
+        'snippets_y': snippets_y[:count],
+        'snippets_indices': snippets_indices[:count],
+        'snippets_profiles': snippets_profiles[:count],
+        'snippets_areas': snippets_areas[:count],
+        'mask': mask,
+        'mask_list': mask_list,
+        'rec_time_s': rec_time_s
+    }
 
 
-def plot_patterns(gaze_df, patterns_df, occurrences, output_dir, max_patterns=8):
-    """Visualize patterns + occurrences (simplified from ipynb)."""
+def plot_pattern_grid(snippets_x, snippets_y, output_dir, filename, alpha_by_time=False):
+    """Scatter plot of extracted patterns."""
     os.makedirs(output_dir, exist_ok=True)
-    
-    fig, axes = plt.subplots(2, 4, figsize=(16, 8))
-    axes = axes.flatten()
-    
-    for i, (_, pat) in enumerate(patterns_df.head(max_patterns).iterrows()):
-        ax = axes[i]
-        
-        # Prototype trajectory
-        proto = pat['prototype']
-        ax.plot(proto[:, 0], proto[:, 1], 'y-', linewidth=3, label='Prototype')
-        
-        # Sample 5 occurrences
-        occs = pat['occurrence_indices'][:5]
-        for j, occ_idx in enumerate(occs):
-            occ_traj = gaze_df.iloc[occ_idx * 10 : (occ_idx + 1) * 10][['norm_pos_x', 'norm_pos_y']].values  # Approx
-            alpha = 0.3 + 0.1 * j
-            ax.plot(occ_traj[:, 0], occ_traj[:, 1], 'r-', alpha=alpha)
-        
-        ax.set_title(f'Pattern {pat["pattern_id"]} ({pat["n_occurrences"]} occs)')
-        ax.set_aspect('equal')
-        ax.grid(True, alpha=0.3)
-    
-    plt.suptitle('Extracted Scan Patterns (Yellow=Proto, Red=Occurrences)')
+    k = len(snippets_x)
+
+    fig, axs = plt.subplots(3, 4, figsize=(12, 9))
+    for i in range(k):
+        axs.flat[i].set_title(f'Pattern #{i + 1}')
+        for t in range(snippets_x.shape[1]):
+            alpha = 0.2 + 0.8 * t / max(1, snippets_x.shape[1] - 1) if alpha_by_time else 1.0
+            axs.flat[i].plot(snippets_x[i, t], snippets_y[i, t], 'o', color='black', markersize=6, alpha=alpha)
+        axs.flat[i].set_xlim([0 - 0.05, 1 + 0.05])
+        axs.flat[i].set_ylim([0 - 0.05, 1 + 0.05])
+
+    for j in range(k, 12):
+        axs.flat[j].set_facecolor('white')
+        axs.flat[j].set_xticks([])
+        axs.flat[j].set_yticks([])
+
     plt.tight_layout()
-    plt.savefig(os.path.join(output_dir, 'scan_patterns.png'), dpi=300, bbox_inches='tight')
+    plt.savefig(os.path.join(output_dir, filename), dpi=300)
     plt.close()
-    print(f"Saved scan_patterns.png with {len(patterns_df)} patterns")
+
+
+def plot_pattern_time_series(tx, ty, rec_time_s, mask, output_dir, filename):
+    """Time-series view with pattern overlays."""
+    os.makedirs(output_dir, exist_ok=True)
+    k = int(np.nanmax(mask) + 1) if np.any(mask >= 0) else 0
+    if k == 0:
+        print("No patterns to plot in time series.")
+        return
+
+    sns.set(rc={'figure.figsize': (16, 6)})
+    fig, axs = plt.subplots(2)
+    for i in range(k):
+        for t in rec_time_s[np.where(mask == i)[0]]:
+            axs[0].axvline(t, color=sns.color_palette("tab20")[i], ls='-', lw=1, alpha=0.1)
+            axs[1].axvline(t, color=sns.color_palette("tab20")[i], ls='-', lw=1, alpha=0.1)
+
+    axs[0].plot(rec_time_s, tx, color='black')
+    axs[1].plot(rec_time_s, ty, color='black')
+    axs[0].set_title('X Coordinate')
+    axs[1].set_title('Y Coordinate')
+    for ax in axs:
+        ax.set_xlabel('Time (s)')
+
+    plt.tight_layout()
+    plt.savefig(os.path.join(output_dir, filename), dpi=300)
+    plt.close()
+
+
+def compute_dtw_averages(tx, ty, rec_time_s, mask, gap_threshold=0.05):
+    """Average each pattern's segments with DTW alignment."""
+    if dtw_path is None:
+        print("tslearn is not installed; skipping DTW averaging.")
+        return [], []
+
+    def align_series(ref_series, series):
+        try:
+            path, _ = dtw_path(ref_series, series, itakura_max_slope=1)
+        except RuntimeWarning:
+            # Fallback when constraint is infeasible for short/unequal series.
+            path, _ = dtw_path(ref_series, series)
+        return series[np.array(path)[:, 1]]
+
+    k = int(np.nanmax(mask) + 1) if np.any(mask >= 0) else 0
+    snippet_xavg = []
+    snippet_yavg = []
+
+    for i in range(k):
+        t = np.array(rec_time_s[np.where(mask == i)[0]])
+        if t.size == 0:
+            snippet_xavg.append(np.array([]))
+            snippet_yavg.append(np.array([]))
+            continue
+
+        gap_locs = np.where(t[1:] - t[:-1] > gap_threshold)[0]
+        t_segments = np.split(t, gap_locs + 1)
+        tx_segments = np.split(tx[np.where(mask == i)[0]], gap_locs + 1)
+        ty_segments = np.split(ty[np.where(mask == i)[0]], gap_locs + 1)
+
+        ref_series = max(tx_segments, key=len)
+        aligned = []
+        for s in tx_segments:
+            aligned.append(align_series(ref_series, s))
+        if aligned:
+            min_len = min(len(a) for a in aligned)
+            aligned_trim = [a[:min_len] for a in aligned]
+            snippet_xavg.append(np.mean(aligned_trim, axis=0))
+        else:
+            snippet_xavg.append(np.array([]))
+
+        ref_series = max(ty_segments, key=len)
+        aligned = []
+        for s in ty_segments:
+            aligned.append(align_series(ref_series, s))
+        if aligned:
+            min_len = min(len(a) for a in aligned)
+            aligned_trim = [a[:min_len] for a in aligned]
+            snippet_yavg.append(np.mean(aligned_trim, axis=0))
+        else:
+            snippet_yavg.append(np.array([]))
+
+    return snippet_xavg, snippet_yavg
 
 # ========== UPDATED MAIN ==========
 def main():
@@ -235,7 +405,6 @@ def main():
 
     
     # STEP 1: Load (your original)
-    surface1, surface2 = load_data(surface1_path, surface2_path)
     surface1, surface2 = load_data(surface1_path, surface2_path)
     if surface1 is None or surface2 is None:
         return
@@ -257,17 +426,48 @@ def main():
     # STEP 2: Screen coverage (your original)
     coverage = analyze_screen_coverage(surface1, surface2)
     
-    # NEW STEP 2.5: CONCAT FOR TRAJECTORIES
-    combined_gaze = pd.concat([surface1, surface2], ignore_index=True)
-    combined_gaze = combined_gaze.sort_values('world_timestamp').reset_index(drop=True)  # Time order
-    print(f"\nCombined gaze for patterns: {len(combined_gaze)} samples")
-    
-    # NEW STEPS 3.5-6: Extract patterns (ipynb → 60Hz tuned: window=42 ~0.7s)
-    print("\n=== EXTRACTING SCAN PATTERNS (from notebook) ===")
-    gaze_windows = sliding_window_gaze(combined_gaze[['norm_pos_x', 'norm_pos_y']], window_length=42, stride=10)
-    patterns_df, occ_indices = extract_patterns(gaze_windows, num_patterns=10)
-    patterns_df.to_csv(os.path.join(output_dir, 'scan_patterns.csv'), index=False)
-    plot_patterns(combined_gaze, patterns_df, occ_indices, output_dir)
+    # NEW STEP 2.5: Continuous gaze patterns (from notebook)
+    gaze_path = os.path.join(week_dir, "example_data", "Mateo_data", "exports", "000", "gaze_positions.csv")
+    gaze_df = load_gaze_positions(gaze_path)
+    if gaze_df is not None:
+        print("\n=== EXTRACTING SCAN PATTERNS (matrix profile) ===")
+        gaze_df = preprocess_gaze_positions(gaze_df)
+
+        tx = np.array(gaze_df['norm_pos_x'])
+        ty = np.array(gaze_df['norm_pos_y'])
+        rec_time_s = np.array(gaze_df['rec_time_s'])
+
+        pattern_results = extract_matrix_profile_patterns(
+            tx,
+            ty,
+            rec_time_s,
+            m=95,
+            k=10,
+            diff=2,
+            q_min=0.001,
+            q_max=0.01,
+            min_masks=5
+        )
+
+        if pattern_results is not None:
+            patterns_df = pattern_results['patterns_df']
+            patterns_df.to_csv(os.path.join(output_dir, 'scan_patterns.csv'), index=False)
+
+            plot_pattern_grid(pattern_results['snippets_x'], pattern_results['snippets_y'], output_dir,
+                              filename='scan_patterns.png', alpha_by_time=False)
+            plot_pattern_grid(pattern_results['snippets_x'], pattern_results['snippets_y'], output_dir,
+                              filename='scan_patterns_fade.png', alpha_by_time=True)
+            plot_pattern_time_series(tx, ty, rec_time_s, pattern_results['mask'], output_dir,
+                                     filename='scan_patterns_time_series.png')
+
+            snippet_xavg, snippet_yavg = compute_dtw_averages(tx, ty, rec_time_s, pattern_results['mask'])
+            if snippet_xavg and animation is not None:
+                np.save(os.path.join(output_dir, 'scan_patterns_dtw_xavg.npy'), np.array(snippet_xavg, dtype=object))
+                np.save(os.path.join(output_dir, 'scan_patterns_dtw_yavg.npy'), np.array(snippet_yavg, dtype=object))
+        else:
+            print("Pattern extraction skipped.")
+    else:
+        print("Skipping scan pattern extraction (gaze_positions.csv not found).")
     
     # Continue with your original AOI/transition pipeline...
     screen1_aoi = create_aoi_data(surface1)
@@ -275,7 +475,7 @@ def main():
     # [All your count_fixations_per_aoi, calculate_aoi_durations, transitions, viz...]
     
     print("\n=== ANALYSIS COMPLETE ===")
-    print("New files: scan_patterns.csv/png")
+    print("New files: scan_patterns.csv/png (if gaze_positions.csv is available)")
 
 if __name__ == "__main__":
     main()
