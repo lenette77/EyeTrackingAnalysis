@@ -1,6 +1,6 @@
 """
-Eye-Tracking Analysis: Dual-Screen AOIs + Continuous Scan Patterns (ipynb Integrated)
-Combines fixation AOI/transitions (your py) + trajectory patterns (notebook).
+Eye-Tracking Analysis: Multi-Surface AOIs + Continuous Scan Patterns (ipynb Integrated)
+Combines fixation AOI/transitions + trajectory patterns.
 """
 
 import pandas as pd
@@ -29,48 +29,79 @@ except ImportError:
 warnings.filterwarnings('ignore')
 
 # ========== YOUR ORIGINAL FUNCTIONS (unchanged) ==========
-def load_data(surface1_path, surface2_path):
-    """Load CSV files containing fixation data from two surfaces"""
+def load_data(surface_path):
+    """Load a CSV file containing fixation data for one surface."""
     try:
-        surface1 = pd.read_csv(surface1_path)
-        surface2 = pd.read_csv(surface2_path)
+        data = pd.read_csv(surface_path)
         print("Data loaded successfully")
-        print(f"Surface 1 shape: {surface1.shape}")
-        print(f"Surface 1 columns: {list(surface1.columns)}")
-        print(f"Surface 2 shape: {surface2.shape}")
-        print(f"Surface 2 columns: {list(surface2.columns)}")
-        return surface1, surface2
+        print(f"Surface shape: {data.shape}")
+        print(f"Surface columns: {list(data.columns)}")
+        return data
     except FileNotFoundError as e:
         print(f"Error: {e}")
-        print("Files not found.")
-        return None, None
+        print("File not found.")
+        return None
 
-def analyze_screen_coverage(surface1, surface2, all_fixations=None):
-    """Analyze which fixations landed on which screen"""
-    fixations_on_s1 = surface1[surface1['on_surf'] == True]['fixationid'].unique()
-    fixations_on_s2 = surface2[surface2['on_surf'] == True]['fixationid'].unique()
-    
+
+def normalize_fixation_cols(df):
+    """Normalize column names to match script expectations."""
+    data = df.copy()
+    data.columns = data.columns.str.strip().str.lower().str.replace(' ', '_')
+    rename_map = {
+        'fixation_id': 'fixationid',
+    }
+    data = data.rename(columns=rename_map)
+    return data
+
+
+def analyze_surface_coverage(surface_map, all_fixations=None):
+    """Analyze which fixations landed on which surface (multi-surface)."""
+    surface_sets = {}
+    for label, df in surface_map.items():
+        if df is None or 'on_surf' not in df.columns or 'fixationid' not in df.columns:
+            surface_sets[label] = set()
+            continue
+        surface_sets[label] = set(df[df['on_surf'] == True]['fixationid'].unique())
+
     if all_fixations is not None and 'fixationid' in all_fixations.columns:
-        all_fixations = all_fixations['fixationid'].unique()
+        all_fixation_ids = set(all_fixations['fixationid'].unique())
     else:
-        all_fixations = pd.concat([surface1['fixationid'], surface2['fixationid']]).unique()
-        print("Warning: all_fixations not provided; neither screen is based only on surface files.")
-    
-    only_s1 = set(fixations_on_s1) - set(fixations_on_s2)
-    only_s2 = set(fixations_on_s2) - set(fixations_on_s1)
-    both_screens = set(fixations_on_s1) & set(fixations_on_s2)
-    neither = set(all_fixations) - set(fixations_on_s1) - set(fixations_on_s2)
-    
+        combined = set()
+        for s in surface_sets.values():
+            combined |= s
+        all_fixation_ids = combined
+        print("Warning: all_fixations not provided; 'neither surface' is based only on surface files.")
+
+    any_surface = set()
+    for s in surface_sets.values():
+        any_surface |= s
+
+    surface_counts = {label: len(s) for label, s in surface_sets.items()}
+    neither = all_fixation_ids - any_surface
+
+    overlap_counts = {}
+    for fix_id in any_surface:
+        count = sum(1 for s in surface_sets.values() if fix_id in s)
+        overlap_counts[fix_id] = count
+    multi_surface = {fid for fid, count in overlap_counts.items() if count > 1}
+
     print("="*60)
-    print("Fixation Screen Coverage Analysis")
+    print("Fixation Surface Coverage Analysis")
     print("="*60)
-    print(f"Screen 1 only: {len(only_s1)} fixations")
-    print(f"Screen 2 only: {len(only_s2)} fixations")
-    print(f"Both screens: {len(both_screens)} fixations")
-    print(f"Neither screen: {len(neither)} fixations")
-    print(f"Total unique fixations: {len(all_fixations)}")
-    
-    return only_s1, only_s2, both_screens, neither, all_fixations
+    for label in surface_map.keys():
+        print(f"{label}: {surface_counts.get(label, 0)} fixations")
+    print(f"On any surface: {len(any_surface)} fixations")
+    print(f"Multi-surface: {len(multi_surface)} fixations")
+    print(f"Neither surface: {len(neither)} fixations")
+    print(f"Total unique fixations: {len(all_fixation_ids)}")
+
+    return {
+        'surface_sets': surface_sets,
+        'any_surface': any_surface,
+        'multi_surface': multi_surface,
+        'neither': neither,
+        'all_fixations': all_fixation_ids
+    }
 
 def assign_aoi(x, y):
     """Takes x,y coordinates and returns which AOI it belongs to (1-9 row-major)"""
@@ -124,9 +155,421 @@ def create_aoi_data(surface_data):
     print(data[['fixationid', 'norm_pos_x', 'norm_pos_y', 'aoi']].head(10))
     return data
 
-# ... [Include all your other original functions: count_fixations_per_aoi, calculate_aoi_durations, 
-# create_transition_sequence, create_transition_matrix, analyze_cross_screen_transitions, 
-# all visualize_* functions exactly as before. To save space, assume they're here unchanged.]
+
+def create_aoi_data_for_surface(surface_data, surface_label):
+    """Create AOI assignments and tag rows with surface label (surface-aware AOIs)."""
+    labeled = surface_data.copy()
+    labeled['surface'] = surface_label
+    df = create_aoi_data(labeled)
+    df['surface'] = surface_label
+    df['aoi_id'] = df['surface'] + '|' + df['aoi'].astype(str)
+    return df
+
+
+def count_fixations_per_aoi(surface_data, output_dir="output", output_filename="aoi_fixation_counts.csv"):
+    """Count how many unique fixations landed in each AOI."""
+    aoi_counts = surface_data.groupby('aoi')['fixationid'].nunique()
+    aoi_counts_df = aoi_counts.reset_index()
+    aoi_counts_df.columns = ['AOI', 'Fixation_Count']
+    aoi_counts_df = aoi_counts_df.sort_values('Fixation_Count', ascending=False)
+
+    print("="*60)
+    print("STEP 4: Fixation Count Per AOI")
+    print("="*60)
+    print(aoi_counts_df)
+
+    os.makedirs(output_dir, exist_ok=True)
+    aoi_counts_df.to_csv(os.path.join(output_dir, output_filename), index=False)
+    print(f"Saved to: {output_dir}/{output_filename}")
+
+    return aoi_counts_df
+
+
+def calculate_aoi_durations(surface_data, output_dir="output", output_filename="aoi_durations.csv"):
+    """Sum up how long people looked at each AOI."""
+    aoi_durations = surface_data.groupby('aoi')['duration'].sum()
+    aoi_durations_df = aoi_durations.reset_index()
+    aoi_durations_df.columns = ['AOI', 'Total_Duration_ms']
+    aoi_durations_df = aoi_durations_df.sort_values('Total_Duration_ms', ascending=False)
+
+    print("="*60)
+    print("STEP 5: Total Duration Per AOI")
+    print("="*60)
+    print(aoi_durations_df)
+
+    os.makedirs(output_dir, exist_ok=True)
+    aoi_durations_df.to_csv(os.path.join(output_dir, output_filename), index=False)
+    print(f"Saved to: {output_dir}/{output_filename}")
+
+    return aoi_durations_df
+
+
+def create_transition_sequence(surface_data, output_dir="output"):
+    """Track how gaze moves from one AOI to another over time."""
+    data = surface_data.copy()
+    group_cols = ['fixationid']
+    if 'surface' in data.columns:
+        group_cols = ['fixationid', 'surface']
+
+    if data.duplicated(subset=group_cols).any():
+        data = collapse_fixations(data, group_cols=group_cols)
+        data['aoi'] = data.apply(
+            lambda row: assign_aoi(row['norm_pos_x'], row['norm_pos_y']),
+            axis=1
+        )
+        if 'surface' in data.columns:
+            data['aoi_id'] = data['surface'] + '|' + data['aoi'].astype(str)
+
+    fixation_sequence = data.sort_values('world_timestamp').reset_index(drop=True)
+    aoi_col = 'aoi_id' if 'aoi_id' in fixation_sequence.columns else 'aoi'
+
+    os.makedirs(output_dir, exist_ok=True)
+    seq_cols = ['fixationid', aoi_col, 'world_timestamp']
+    seq_cols = [c for c in seq_cols if c in fixation_sequence.columns]
+    fixation_sequence[seq_cols].to_csv(
+        os.path.join(output_dir, 'full_fixation_sequence.csv'),
+        index=False
+    )
+
+    fixation_sequence['next_fixation_id'] = fixation_sequence['fixationid'].shift(-1)
+    fixation_sequence['next_world_timestamp'] = fixation_sequence['world_timestamp'].shift(-1)
+    fixation_sequence['next_aoi'] = fixation_sequence[aoi_col].shift(-1)
+
+    transitions = fixation_sequence[fixation_sequence['next_aoi'].notna()].copy()
+    transitions['transition'] = transitions[aoi_col].astype(str) + ' -> ' + transitions['next_aoi'].astype(str)
+    transitions['transition_duration'] = transitions['next_world_timestamp'] - transitions['world_timestamp']
+
+    if aoi_col == 'aoi_id':
+        transitions['from_surface'] = transitions[aoi_col].apply(
+            lambda s: s.split('|')[0] if isinstance(s, str) and '|' in s else ''
+        )
+        transitions['to_surface'] = transitions['next_aoi'].apply(
+            lambda s: s.split('|')[0] if isinstance(s, str) and '|' in s else ''
+        )
+    else:
+        transitions['from_surface'] = ''
+        transitions['to_surface'] = ''
+
+    print("="*60)
+    print("STEP 6: Transition Sequence")
+    print("="*60)
+    display_cols = [aoi_col, 'next_aoi', 'transition', 'world_timestamp', 'next_world_timestamp', 'transition_duration']
+    available = [c for c in display_cols if c in transitions.columns]
+    print(transitions[available].head(20))
+
+    out_cols = ['fixationid', aoi_col, 'world_timestamp', 'next_fixation_id', 'next_aoi',
+                'next_world_timestamp', 'transition_duration', 'transition']
+    out_cols = [c for c in out_cols if c in transitions.columns]
+    transitions[out_cols].to_csv(os.path.join(output_dir, 'transition_sequence.csv'), index=False)
+    print(f"Saved to: {output_dir}/transition_sequence.csv")
+    print(f"Saved to: {output_dir}/full_fixation_sequence.csv")
+
+    return transitions
+
+
+def _get_surface_order_from_transitions(transitions, surface_order=None):
+    if surface_order:
+        return surface_order
+    if 'from_surface' in transitions.columns:
+        surfaces = list(pd.unique(transitions['from_surface'].dropna()))
+    else:
+        surfaces = []
+    return [s for s in surfaces if s]
+
+
+def create_transition_matrix(transitions, output_dir="output", surface_order=None):
+    """Count how many times each AOI-to-AOI transition happens."""
+    from_col = 'aoi_id' if 'aoi_id' in transitions.columns else 'aoi'
+    transition_counts = transitions.groupby([from_col, 'next_aoi']).size().reset_index(name='count')
+    matrix = transition_counts.pivot(index=from_col, columns='next_aoi', values='count')
+    matrix = matrix.fillna(0)
+
+    if from_col == 'aoi_id':
+        base_aois = ['1', '2', '3', '4', '5', '6', '7', '8', '9']
+        surface_order = _get_surface_order_from_transitions(transitions, surface_order)
+        all_aois = []
+        for s in surface_order:
+            for b in base_aois:
+                all_aois.append(f"{s}|{b}")
+    else:
+        all_aois = [1, 2, 3, 4, 5, 6, 7, 8, 9]
+
+    for aoi in all_aois:
+        if aoi not in matrix.index:
+            matrix.loc[aoi] = 0
+        if aoi not in matrix.columns:
+            matrix[aoi] = 0
+
+    matrix = matrix.loc[all_aois, all_aois]
+
+    print("="*60)
+    print("STEP 7: Transition Matrix")
+    print("="*60)
+    print(matrix)
+
+    os.makedirs(output_dir, exist_ok=True)
+    matrix.to_csv(os.path.join(output_dir, 'transition_matrix.csv'))
+    print(f"Saved to: {output_dir}/transition_matrix.csv")
+
+    return matrix
+
+
+def analyze_cross_screen_transitions(transitions, output_dir="output"):
+    """Extract transitions that cross surfaces, compute counts and durations, and save details."""
+    if 'from_surface' not in transitions.columns or 'to_surface' not in transitions.columns:
+        print("No surface information in transitions; cannot compute cross-surface transitions.")
+        return None
+
+    cross = transitions[transitions['from_surface'] != transitions['to_surface']].copy()
+    total_cross = len(cross)
+    if total_cross > 0 and 'transition_duration' in cross.columns:
+        avg_duration = cross['transition_duration'].mean()
+        median_duration = cross['transition_duration'].median()
+    else:
+        avg_duration = None
+        median_duration = None
+
+    os.makedirs(output_dir, exist_ok=True)
+    cols = ['fixationid', 'aoi_id' if 'aoi_id' in cross.columns else 'aoi', 'world_timestamp',
+            'next_fixation_id', 'next_aoi', 'next_world_timestamp', 'transition_duration', 'from_surface', 'to_surface']
+    cols = [c for c in cols if c in cross.columns]
+    cross.to_csv(os.path.join(output_dir, 'cross_screen_transitions.csv'), index=False)
+
+    summary = {
+        'total_cross_transitions': int(total_cross),
+        'avg_transition_duration': float(avg_duration) if avg_duration is not None else None,
+        'median_transition_duration': float(median_duration) if median_duration is not None else None
+    }
+    print("Cross-surface transitions summary:")
+    print(summary)
+
+    return cross, summary
+
+
+def save_cross_screen_summary_and_visuals(cross, summary, output_dir="output"):
+    """Save cross-surface summary (JSON/CSV) and create visualizations."""
+    import json
+
+    os.makedirs(output_dir, exist_ok=True)
+    with open(os.path.join(output_dir, 'cross_screen_summary.json'), 'w') as f:
+        json.dump(summary, f, indent=2)
+
+    summary_df = pd.DataFrame([summary])
+    summary_df.to_csv(os.path.join(output_dir, 'cross_screen_summary.csv'), index=False)
+
+    if cross is None or cross.empty:
+        print("No cross-surface transitions to visualize.")
+        return
+
+    if 'transition_duration' not in cross.columns:
+        print('No transition_duration available; skipping duration plots')
+
+    pair_counts = cross.groupby(['from_surface', 'to_surface']).size().reset_index(name='count')
+    pair_counts['pair'] = pair_counts['from_surface'] + ' -> ' + pair_counts['to_surface']
+    plt.figure(figsize=(8, 4))
+    sns.barplot(data=pair_counts, x='pair', y='count', palette='muted')
+    plt.title('Cross-Surface Transition Counts')
+    plt.xlabel('Transition Pair')
+    plt.ylabel('Count')
+    plt.xticks(rotation=30, ha='right')
+    plt.tight_layout()
+    plt.savefig(os.path.join(output_dir, 'cross_transition_counts.png'), dpi=300)
+    plt.close()
+
+    if 'transition_duration' in cross.columns:
+        plt.figure(figsize=(6, 4))
+        sns.histplot(cross['transition_duration'].dropna(), bins=20, kde=False, color='steelblue')
+        plt.title('Cross-Surface Transition Duration')
+        plt.xlabel('Duration (same units as world_timestamp)')
+        plt.ylabel('Frequency')
+        plt.tight_layout()
+        plt.savefig(os.path.join(output_dir, 'cross_transition_duration_hist.png'), dpi=300)
+        plt.close()
+
+    if 'world_timestamp' in cross.columns:
+        plt.figure(figsize=(10, 3))
+        cross = cross.copy()
+        cross['pair'] = cross['from_surface'] + ' -> ' + cross['to_surface']
+        sns.scatterplot(data=cross, x='world_timestamp', y='transition_duration', hue='pair', s=50)
+        plt.title('Cross-Surface Transitions Timeline')
+        plt.xlabel('World Timestamp')
+        plt.ylabel('Transition Duration')
+        plt.legend(bbox_to_anchor=(1.01, 1), loc='upper left')
+        plt.tight_layout()
+        plt.savefig(os.path.join(output_dir, 'cross_transition_timeline.png'), dpi=300)
+        plt.close()
+
+    print(f"Saved cross-surface summary and visualizations to: {output_dir}")
+
+
+def visualize_fixation_heatmap(aoi_counts_df, output_dir="output", output_filename="fixation_heatmap.png"):
+    """Create a visual grid showing where people looked most."""
+    grid = np.zeros((3, 3))
+    aoi_to_position = {
+        1: (0, 0), 2: (0, 1), 3: (0, 2),
+        4: (1, 0), 5: (1, 1), 6: (1, 2),
+        7: (2, 0), 8: (2, 1), 9: (2, 2)
+    }
+
+    for _, row in aoi_counts_df.iterrows():
+        aoi_value = row['AOI']
+        count = row['Fixation_Count']
+        try:
+            aoi_value = int(aoi_value)
+        except (TypeError, ValueError):
+            continue
+        if aoi_value in aoi_to_position:
+            pos = aoi_to_position[aoi_value]
+            grid[pos[0], pos[1]] = count
+
+    plt.figure(figsize=(8, 6))
+    sns.heatmap(grid, annot=True, fmt='.0f', cmap='YlOrRd',
+                xticklabels=['1/4/7', '2/5/8', '3/6/9'],
+                yticklabels=['1-3', '4-6', '7-9'])
+    plt.title('Fixation Count Heatmap')
+    plt.xlabel('AOI Column (by id)')
+    plt.ylabel('AOI Row (by id)')
+
+    os.makedirs(output_dir, exist_ok=True)
+    plt.savefig(os.path.join(output_dir, output_filename), dpi=300, bbox_inches='tight')
+    print(f"Saved to: {output_dir}/{output_filename}")
+    plt.close()
+
+
+def visualize_transition_heatmap(matrix, output_dir="output"):
+    """Create a heatmap of the transition matrix."""
+    plt.figure(figsize=(10, 8))
+    sns.heatmap(matrix, annot=True, fmt='.0f', cmap='Blues')
+    plt.title('AOI Transition Matrix')
+    plt.xlabel('To AOI')
+    plt.ylabel('From AOI')
+    plt.tight_layout()
+
+    os.makedirs(output_dir, exist_ok=True)
+    plt.savefig(os.path.join(output_dir, 'transition_matrix_heatmap.png'), dpi=300)
+    print(f"Saved to: {output_dir}/transition_matrix_heatmap.png")
+    plt.close()
+
+
+def visualize_fixation_density(surface_data, output_dir="output", output_filename="fixation_density.png"):
+    """Create a 2D density chart of fixation locations on a surface."""
+    data = surface_data[surface_data['on_surf'] == True].copy()
+    if data.empty:
+        print("No on-surface fixations found; skipping density chart.")
+        return
+
+    data = collapse_fixations(data)
+
+    plt.figure(figsize=(6, 5), facecolor='black')
+    sns.kdeplot(
+        data=data,
+        x='norm_pos_x',
+        y='norm_pos_y',
+        fill=True,
+        levels=50,
+        cmap='mako',
+        bw_adjust=0.8
+    )
+    ax = plt.gca()
+    ax.set_facecolor('black')
+    ax.set_title('Fixation Density', color='white')
+    ax.set_xlabel('Normalized X', color='white')
+    ax.set_ylabel('Normalized Y', color='white')
+    ax.tick_params(colors='white')
+    plt.xlim(0, 1)
+    plt.ylim(0, 1)
+    plt.gca().invert_yaxis()
+    plt.tight_layout()
+
+    os.makedirs(output_dir, exist_ok=True)
+    plt.savefig(os.path.join(output_dir, output_filename), dpi=300)
+    print(f"Saved to: {output_dir}/{output_filename}")
+    plt.close()
+
+
+def visualize_transition_path(sequence_data, surface_order, output_dir="output", output_filename="transition_path.png"):
+    """Visualize the full fixation sequence across surfaces as a traced path."""
+    data = sequence_data.copy()
+    if 'surface' not in data.columns or 'norm_pos_x' not in data.columns or 'norm_pos_y' not in data.columns:
+        print("Missing surface or normalized positions for transition path; skipping.")
+        return
+
+    group_cols = ['fixationid', 'surface'] if 'surface' in data.columns else ['fixationid']
+    if data.duplicated(subset=group_cols).any():
+        data = collapse_fixations(data, group_cols=group_cols)
+
+    data = data.sort_values('world_timestamp').reset_index(drop=True)
+
+    grid_size = 3
+    gap = 1
+    surface_set = set(surface_order)
+    if {'Left', 'Mid', 'Right', 'Dashboard'}.issubset(surface_set):
+        offsets = {
+            'Left': (0, 0),
+            'Mid': (grid_size + gap, 0),
+            'Right': (2 * (grid_size + gap), 0),
+            'Dashboard': (grid_size + gap, grid_size + gap)
+        }
+    else:
+        offsets = {label: (i * (grid_size + gap), 0) for i, label in enumerate(surface_order)}
+
+    xs = []
+    ys = []
+    labels = []
+    for _, row in data.iterrows():
+        surface = row['surface']
+        if surface not in offsets:
+            continue
+        try:
+            x_norm = float(row['norm_pos_x'])
+            y_norm = float(row['norm_pos_y'])
+        except (TypeError, ValueError):
+            continue
+        if not (0 <= x_norm <= 1 and 0 <= y_norm <= 1):
+            continue
+        x_off, y_off = offsets[surface]
+        x = x_off + (x_norm * grid_size)
+        y = y_off + (y_norm * grid_size)
+        xs.append(x)
+        ys.append(y)
+        labels.append(row['fixationid'])
+
+    if len(xs) < 2:
+        print("Not enough fixations for transition path; skipping.")
+        return
+
+    plt.figure(figsize=(12, 4))
+    ax = plt.gca()
+    ax.set_aspect('equal')
+
+    for label, (x_off, y_off) in offsets.items():
+        for i in range(grid_size + 1):
+            ax.plot([x_off, x_off + grid_size], [y_off + i, y_off + i], color='gray', linewidth=0.6)
+            ax.plot([x_off + i, x_off + i], [y_off, y_off + grid_size], color='gray', linewidth=0.6)
+        ax.text(x_off + 1.5, y_off - 0.4, label, ha='center', va='top')
+
+    ax.plot(xs, ys, color='tab:orange', linewidth=0.8, alpha=0.35, linestyle='--')
+    ax.scatter(xs, ys, color='tab:orange', s=18, alpha=0.9, zorder=3)
+    for x, y, label in zip(xs, ys, labels):
+        ax.text(x, y, str(label), fontsize=6, ha='center', va='center', color='black', zorder=4)
+    ax.scatter(xs[0], ys[0], color='green', s=30, label='Start')
+    ax.scatter(xs[-1], ys[-1], color='red', s=30, label='End')
+
+    max_x = max(pos[0] for pos in offsets.values()) + grid_size + 0.2
+    max_y = max(pos[1] for pos in offsets.values()) + grid_size + 0.2
+    ax.set_xlim(-0.2, max_x)
+    ax.set_ylim(-0.8, max_y)
+    ax.invert_yaxis()
+    ax.set_xticks([])
+    ax.set_yticks([])
+    ax.set_title('Full Fixation Transition Path')
+    ax.legend(loc='upper right', frameon=False)
+
+    os.makedirs(output_dir, exist_ok=True)
+    plt.tight_layout()
+    plt.savefig(os.path.join(output_dir, output_filename), dpi=300)
+    print(f"Saved to: {output_dir}/{output_filename}")
+    plt.close()
 
 # ========== NEW: INTEGRATED FROM IPYNB ==========
 def load_gaze_positions(path):
@@ -161,17 +604,28 @@ def preprocess_gaze_positions(df, time_col='gaze_timestamp', x_col='norm_pos_x',
     return data
 
 
-def compute_diffwhere(tx, ty, diff=2, quantile=0.85):
+def compute_diffwhere(tx, ty, diff=2, quantile=0.85, max_candidates=None):
     """Select candidate indices based on large changes in X/Y."""
     xdiff = tx[diff:] - tx[:-diff]
     ydiff = ty[diff:] - ty[:-diff]
     xwhere = np.where(np.abs(xdiff) > np.quantile(np.abs(xdiff), quantile))[0]
     ywhere = np.where(np.abs(ydiff) > np.quantile(np.abs(ydiff), quantile))[0]
-    return np.union1d(xwhere, ywhere)
+    candidates = np.union1d(xwhere, ywhere)
+    if max_candidates is not None and len(candidates) > max_candidates:
+        step = max(1, int(np.ceil(len(candidates) / max_candidates)))
+        candidates = candidates[::step]
+    return candidates
+
+
+def downsample_gaze(data, factor):
+    """Downsample gaze data by a fixed factor to reduce memory use."""
+    if factor is None or factor <= 1:
+        return data
+    return data.iloc[::factor].reset_index(drop=True)
 
 
 def extract_matrix_profile_patterns(tx, ty, rec_time_s, m=95, k=10, diff=2, q_min=0.001, q_max=0.01,
-                                    min_masks=5):
+                                    min_masks=5, max_candidates=None):
     """Notebook-style matrix profile pattern extraction using stumpy.mass."""
     if stumpy is None:
         print("stumpy is not installed; skipping matrix profile pattern extraction.")
@@ -182,7 +636,7 @@ def extract_matrix_profile_patterns(tx, ty, rec_time_s, m=95, k=10, diff=2, q_mi
     ty_padded = np.pad(ty, pad_width, mode='constant', constant_values=np.nan)
     n_padded = tx_padded.shape[0]
 
-    diffwhere = compute_diffwhere(tx, ty, diff=diff)
+    diffwhere = compute_diffwhere(tx, ty, diff=diff, max_candidates=max_candidates)
     diffwhere = diffwhere[diffwhere < n_padded - m + 1]
     if len(diffwhere) == 0:
         print("No candidate indices found for matrix profile.")
@@ -394,44 +848,52 @@ def main():
     print("="*60)
     
     script_dir = os.path.dirname(os.path.abspath(__file__))
-    week_dir = os.path.dirname(script_dir)  # Go up from Eyetracking_Analysis\ to Week1 02_04_26\
 
-    data_dir = os.path.join(week_dir, "example_data", "Mateo_data", "exports", "000", "surfaces")
-
-    surface1_path = os.path.join(data_dir, "fixations_on_surface_Surface 1.csv")
-    surface2_path = os.path.join(data_dir, "fixations_on_surface_Surface 2.csv")
-
+    data_root = os.path.join(
+        "Z:\\NSF_Remote_trucking\\Experiment_2\\Eye tracking data",
+        "000",
+        "exports",
+        "002"
+    )
+    surfaces_dir = os.path.join(data_root, "surfaces")
     output_dir = os.path.join(script_dir, "output")
 
-    
-    # STEP 1: Load (your original)
-    surface1, surface2 = load_data(surface1_path, surface2_path)
-    if surface1 is None or surface2 is None:
-        return
+    surfaces = [
+        {"label": "Left", "file": "fixations_on_surface_Left.csv", "id": 1},
+        {"label": "Mid", "file": "fixations_on_surface_Mid.csv", "id": 2},
+        {"label": "Right", "file": "fixations_on_surface_Right.csv", "id": 3},
+        {"label": "Dashboard", "file": "fixations_on_surface_Dashboard.csv", "id": 4},
+    ]
 
-    # Normalize column names: strip spaces, lowercase, remove underscores
-    def normalize_cols(df):
-        df.columns = df.columns.str.strip().str.lower().str.replace(' ', '_')
-        #  Specific renames to match script expectations
-        rename_map = {
-            'fixation_id': 'fixationid',
-        }
-        df = df.rename(columns=rename_map)
-        return df
+    surface_data_map = {}
+    for s in surfaces:
+        path = os.path.join(surfaces_dir, s["file"])
+        df = load_data(path)
+        if df is None:
+            return
+        surface_data_map[s["label"]] = normalize_fixation_cols(df)
 
-    surface1 = normalize_cols(surface1)
-    surface2 = normalize_cols(surface2)
+    all_fixations_path = os.path.join(data_root, "fixations.csv")
+    all_fixations = None
+    if os.path.exists(all_fixations_path):
+        all_fixations = normalize_fixation_cols(pd.read_csv(all_fixations_path))
+    else:
+        print(f"Note: all-fixations file not found at: {all_fixations_path}")
 
-    
-    # STEP 2: Screen coverage (your original)
-    coverage = analyze_screen_coverage(surface1, surface2)
+    surface_order = [s["label"] for s in surfaces]
+
+    # STEP 2: Surface coverage
+    coverage = analyze_surface_coverage(surface_data_map, all_fixations)
     
     # NEW STEP 2.5: Continuous gaze patterns (from notebook)
-    gaze_path = os.path.join(week_dir, "example_data", "Mateo_data", "exports", "000", "gaze_positions.csv")
+    gaze_path = os.path.join(data_root, "gaze_positions.csv")
     gaze_df = load_gaze_positions(gaze_path)
     if gaze_df is not None:
         print("\n=== EXTRACTING SCAN PATTERNS (matrix profile) ===")
         gaze_df = preprocess_gaze_positions(gaze_df)
+
+        # Downsample to reduce memory while preserving pattern structure
+        gaze_df = downsample_gaze(gaze_df, factor=3)
 
         tx = np.array(gaze_df['norm_pos_x'])
         ty = np.array(gaze_df['norm_pos_y'])
@@ -446,7 +908,8 @@ def main():
             diff=2,
             q_min=0.001,
             q_max=0.01,
-            min_masks=5
+            min_masks=5,
+            max_candidates=5000
         )
 
         if pattern_results is not None:
@@ -469,10 +932,46 @@ def main():
     else:
         print("Skipping scan pattern extraction (gaze_positions.csv not found).")
     
-    # Continue with your original AOI/transition pipeline...
-    screen1_aoi = create_aoi_data(surface1)
-    screen2_aoi = create_aoi_data(surface2)
-    # [All your count_fixations_per_aoi, calculate_aoi_durations, transitions, viz...]
+    # Continue with AOI/transition pipeline for all surfaces
+    aoi_data = []
+    for s in surfaces:
+        label = s["label"]
+        df = surface_data_map[label]
+        aoi_df = create_aoi_data_for_surface(df, label)
+        aoi_data.append(aoi_df)
+
+        label_slug = label.lower().replace(' ', '_')
+        aoi_counts = count_fixations_per_aoi(
+            aoi_df,
+            output_dir,
+            output_filename=f"aoi_fixation_counts_{label_slug}.csv"
+        )
+        calculate_aoi_durations(
+            aoi_df,
+            output_dir,
+            output_filename=f"aoi_durations_{label_slug}.csv"
+        )
+        visualize_fixation_heatmap(
+            aoi_counts,
+            output_dir,
+            output_filename=f"fixation_heatmap_{label_slug}.png"
+        )
+        visualize_fixation_density(
+            df,
+            output_dir,
+            output_filename=f"fixation_density_{label_slug}.png"
+        )
+
+    combined = pd.concat(aoi_data).sort_values('world_timestamp')
+    transitions = create_transition_sequence(combined, output_dir)
+    matrix = create_transition_matrix(transitions, output_dir, surface_order=surface_order)
+    visualize_transition_heatmap(matrix, output_dir)
+    visualize_transition_path(combined, surface_order, output_dir, output_filename="transition_path.png")
+
+    cross_details = analyze_cross_screen_transitions(transitions, output_dir)
+    if cross_details is not None:
+        cross_df, cross_summary = cross_details
+        save_cross_screen_summary_and_visuals(cross_df, cross_summary, output_dir)
     
     print("\n=== ANALYSIS COMPLETE ===")
     print("New files: scan_patterns.csv/png (if gaze_positions.csv is available)")

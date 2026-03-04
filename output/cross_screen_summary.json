@@ -1,5 +1,5 @@
 {
-  "total_cross_transitions": 6,
-  "avg_transition_duration": 5.093580833325784,
-  "median_transition_duration": 4.054757999954745
+  "total_cross_transitions": 251,
+  "avg_transition_duration": 0.23911483665284483,
+  "median_transition_duration": 0.13404299999820068
 }
