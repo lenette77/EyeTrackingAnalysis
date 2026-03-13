@@ -436,10 +436,10 @@ def visualize_fixation_heatmap(aoi_counts_df, output_dir="output", output_filena
     plt.close()
 
 
-def visualize_transition_heatmap(matrix, output_dir="output"):
+def visualize_transition_heatmap(matrix, output_dir="output", annotate=False):
     """Create a heatmap of the transition matrix."""
     plt.figure(figsize=(10, 8))
-    sns.heatmap(matrix, annot=True, fmt='.0f', cmap='Blues')
+    sns.heatmap(matrix, annot=annotate, fmt='.0f', cmap='Blues')
     plt.title('AOI Transition Matrix')
     plt.xlabel('To AOI')
     plt.ylabel('From AOI')
@@ -587,6 +587,10 @@ def preprocess_gaze_positions(df, time_col='gaze_timestamp', x_col='norm_pos_x',
                               confidence_col='confidence', confidence_min=0.6):
     """Basic cleanup + time alignment for continuous gaze data."""
     data = df.copy()
+    if x_col not in data.columns and 'x_norm' in data.columns:
+        data[x_col] = data['x_norm']
+    if y_col not in data.columns and 'y_norm' in data.columns:
+        data[y_col] = data['y_norm']
     for col in [time_col, x_col, y_col]:
         if col not in data.columns:
             raise ValueError(f"Missing required column: {col}")
@@ -741,12 +745,19 @@ def plot_pattern_grid(snippets_x, snippets_y, output_dir, filename, alpha_by_tim
     os.makedirs(output_dir, exist_ok=True)
     k = len(snippets_x)
 
+    def time_color(t_index, t_max):
+        if t_max <= 1:
+            return (1.0, 0.0, 0.0)
+        ratio = t_index / (t_max - 1)
+        return (1.0 - ratio, ratio, 0.0)
+
     fig, axs = plt.subplots(3, 4, figsize=(12, 9))
     for i in range(k):
         axs.flat[i].set_title(f'Pattern #{i + 1}')
         for t in range(snippets_x.shape[1]):
             alpha = 0.2 + 0.8 * t / max(1, snippets_x.shape[1] - 1) if alpha_by_time else 1.0
-            axs.flat[i].plot(snippets_x[i, t], snippets_y[i, t], 'o', color='black', markersize=6, alpha=alpha)
+            color = time_color(t, snippets_x.shape[1])
+            axs.flat[i].plot(snippets_x[i, t], snippets_y[i, t], 'o', color=color, markersize=6, alpha=alpha)
         axs.flat[i].set_xlim([0 - 0.05, 1 + 0.05])
         axs.flat[i].set_ylim([0 - 0.05, 1 + 0.05])
 
@@ -782,6 +793,167 @@ def plot_pattern_time_series(tx, ty, rec_time_s, mask, output_dir, filename):
     for ax in axs:
         ax.set_xlabel('Time (s)')
 
+    plt.tight_layout()
+    plt.savefig(os.path.join(output_dir, filename), dpi=300)
+    plt.close()
+
+
+def compute_aoi_summary(aoi_df, output_dir, filename):
+    """Collate AOI stats: counts and durations."""
+    summary = (
+        aoi_df.groupby(['surface', 'aoi_id'])
+        .agg(
+            fixation_count=('fixationid', 'nunique'),
+            total_duration_ms=('duration', 'sum'),
+            mean_duration_ms=('duration', 'mean')
+        )
+        .reset_index()
+        .sort_values(['surface', 'aoi_id'])
+    )
+    os.makedirs(output_dir, exist_ok=True)
+    summary.to_csv(os.path.join(output_dir, filename), index=False)
+    return summary
+
+
+def compute_transition_summary(transitions, output_dir, filename):
+    """Collate transition counts and durations."""
+    summary = (
+        transitions.groupby(['aoi_id', 'next_aoi'])
+        .agg(
+            transition_count=('transition', 'count'),
+            mean_duration=('transition_duration', 'mean'),
+            median_duration=('transition_duration', 'median')
+        )
+        .reset_index()
+        .sort_values('transition_count', ascending=False)
+    )
+    os.makedirs(output_dir, exist_ok=True)
+    summary.to_csv(os.path.join(output_dir, filename), index=False)
+    return summary
+
+
+def _surface_offsets(surface_order, grid_size=3, gap=1):
+    surface_set = set(surface_order)
+    if {'Left', 'Mid', 'Right', 'Dashboard'}.issubset(surface_set):
+        return {
+            'Left': (0, 0),
+            'Mid': (grid_size + gap, 0),
+            'Right': (2 * (grid_size + gap), 0),
+            'Dashboard': (grid_size + gap, grid_size + gap)
+        }
+    return {label: (i * (grid_size + gap), 0) for i, label in enumerate(surface_order)}
+
+
+def _aoi_center(aoi_id, offsets, grid_size=3):
+    if isinstance(aoi_id, str) and '|' in aoi_id:
+        surface, aoi = aoi_id.split('|', 1)
+    else:
+        return None
+    try:
+        aoi = int(aoi)
+    except ValueError:
+        return None
+    if surface not in offsets:
+        return None
+    col = (aoi - 1) % 3
+    row = (aoi - 1) // 3
+    x_off, y_off = offsets[surface]
+    return x_off + (col + 0.5), y_off + (row + 0.5)
+
+
+def visualize_transition_flow_map(transitions, surface_order, output_dir, filename):
+    """Flow map with shaded paths (no labels)."""
+    if transitions.empty:
+        print("No transitions to plot; skipping flow map.")
+        return
+
+    offsets = _surface_offsets(surface_order)
+    counts = transitions.groupby(['aoi_id', 'next_aoi']).size().reset_index(name='count')
+    max_count = max(counts['count']) if len(counts) else 1
+
+    plt.figure(figsize=(12, 4))
+    ax = plt.gca()
+    ax.set_aspect('equal')
+
+    grid_size = 3
+    for label, (x_off, y_off) in offsets.items():
+        for i in range(grid_size + 1):
+            ax.plot([x_off, x_off + grid_size], [y_off + i, y_off + i], color='lightgray', linewidth=0.6)
+            ax.plot([x_off + i, x_off + i], [y_off, y_off + grid_size], color='lightgray', linewidth=0.6)
+        ax.text(x_off + 1.5, y_off - 0.4, label, ha='center', va='top')
+
+    for _, row in counts.iterrows():
+        start = _aoi_center(row['aoi_id'], offsets, grid_size=grid_size)
+        end = _aoi_center(row['next_aoi'], offsets, grid_size=grid_size)
+        if start is None or end is None:
+            continue
+        alpha = 0.1 + 0.8 * (row['count'] / max_count)
+        linewidth = 0.5 + 2.5 * (row['count'] / max_count)
+        ax.plot([start[0], end[0]], [start[1], end[1]], color='steelblue', alpha=alpha, linewidth=linewidth)
+
+    max_x = max(pos[0] for pos in offsets.values()) + grid_size + 0.2
+    max_y = max(pos[1] for pos in offsets.values()) + grid_size + 0.2
+    ax.set_xlim(-0.2, max_x)
+    ax.set_ylim(-0.8, max_y)
+    ax.invert_yaxis()
+    ax.set_xticks([])
+    ax.set_yticks([])
+    ax.set_title('Transition Flow Map')
+
+    os.makedirs(output_dir, exist_ok=True)
+    plt.tight_layout()
+    plt.savefig(os.path.join(output_dir, filename), dpi=300)
+    plt.close()
+
+
+def visualize_cross_transition_density(transitions, surface_order, output_dir, filename):
+    """Density map of cross-surface transition midpoints."""
+    if transitions.empty or 'from_surface' not in transitions.columns:
+        print("No cross-surface transitions to plot; skipping density map.")
+        return
+
+    cross = transitions[transitions['from_surface'] != transitions['to_surface']].copy()
+    if cross.empty:
+        print("No cross-surface transitions found; skipping density map.")
+        return
+
+    offsets = _surface_offsets(surface_order)
+    grid_size = 3
+    mids_x = []
+    mids_y = []
+    for _, row in cross.iterrows():
+        start = _aoi_center(row['aoi_id'], offsets, grid_size=grid_size)
+        end = _aoi_center(row['next_aoi'], offsets, grid_size=grid_size)
+        if start is None or end is None:
+            continue
+        mids_x.append((start[0] + end[0]) / 2.0)
+        mids_y.append((start[1] + end[1]) / 2.0)
+
+    if len(mids_x) < 2:
+        print("Not enough cross-surface transitions for density map; skipping.")
+        return
+
+    plt.figure(figsize=(12, 4))
+    ax = plt.gca()
+    ax.set_aspect('equal')
+
+    for label, (x_off, y_off) in offsets.items():
+        for i in range(grid_size + 1):
+            ax.plot([x_off, x_off + grid_size], [y_off + i, y_off + i], color='lightgray', linewidth=0.6)
+            ax.plot([x_off + i, x_off + i], [y_off, y_off + grid_size], color='lightgray', linewidth=0.6)
+        ax.text(x_off + 1.5, y_off - 0.4, label, ha='center', va='top')
+
+    sns.kdeplot(x=mids_x, y=mids_y, fill=True, cmap='mako', thresh=0.05, levels=20, alpha=0.8)
+    max_x = max(pos[0] for pos in offsets.values()) + grid_size + 0.2
+    max_y = max(pos[1] for pos in offsets.values()) + grid_size + 0.2
+    ax.set_xlim(-0.2, max_x)
+    ax.set_ylim(-0.8, max_y)
+    ax.invert_yaxis()
+    ax.set_xticks([])
+    ax.set_yticks([])
+    ax.set_title('Cross-Surface Transition Density')
+
+    os.makedirs(output_dir, exist_ok=True)
     plt.tight_layout()
     plt.savefig(os.path.join(output_dir, filename), dpi=300)
     plt.close()
@@ -841,6 +1013,8 @@ def compute_dtw_averages(tx, ty, rec_time_s, mask, gap_threshold=0.05):
 
     return snippet_xavg, snippet_yavg
 
+
+
 # ========== UPDATED MAIN ==========
 def main():
     print("="*60)
@@ -849,14 +1023,8 @@ def main():
     
     script_dir = os.path.dirname(os.path.abspath(__file__))
 
-    data_root = os.path.join(
-        "Z:\\NSF_Remote_trucking\\Experiment_2\\Eye tracking data",
-        "000",
-        "exports",
-        "002"
-    )
-    surfaces_dir = os.path.join(data_root, "surfaces")
-    output_dir = os.path.join(script_dir, "output")
+    data_base = os.path.join("C:\\Users\\lenny\\Desktop\\Wisco\\HFML Lab\\2026_03_03")
+    run_ids = ["000", "001"]
 
     surfaces = [
         {"label": "Left", "file": "fixations_on_surface_Left.csv", "id": 1},
@@ -865,113 +1033,129 @@ def main():
         {"label": "Dashboard", "file": "fixations_on_surface_Dashboard.csv", "id": 4},
     ]
 
-    surface_data_map = {}
-    for s in surfaces:
-        path = os.path.join(surfaces_dir, s["file"])
-        df = load_data(path)
-        if df is None:
-            return
-        surface_data_map[s["label"]] = normalize_fixation_cols(df)
+    for run_id in run_ids:
+        print("\n" + "=" * 60)
+        print(f"PROCESSING RUN: {run_id}")
+        print("=" * 60)
 
-    all_fixations_path = os.path.join(data_root, "fixations.csv")
-    all_fixations = None
-    if os.path.exists(all_fixations_path):
-        all_fixations = normalize_fixation_cols(pd.read_csv(all_fixations_path))
-    else:
-        print(f"Note: all-fixations file not found at: {all_fixations_path}")
+        data_root = os.path.join(data_base, run_id, "exports", run_id)
+        surfaces_dir = os.path.join(data_root, "surfaces")
+        output_dir = os.path.join(script_dir, "output", run_id)
+        os.makedirs(output_dir, exist_ok=True)
 
-    surface_order = [s["label"] for s in surfaces]
+        surface_data_map = {}
+        for s in surfaces:
+            path = os.path.join(surfaces_dir, s["file"])
+            df = load_data(path)
+            if df is None:
+                return
+            surface_data_map[s["label"]] = normalize_fixation_cols(df)
 
-    # STEP 2: Surface coverage
-    coverage = analyze_surface_coverage(surface_data_map, all_fixations)
-    
-    # NEW STEP 2.5: Continuous gaze patterns (from notebook)
-    gaze_path = os.path.join(data_root, "gaze_positions.csv")
-    gaze_df = load_gaze_positions(gaze_path)
-    if gaze_df is not None:
-        print("\n=== EXTRACTING SCAN PATTERNS (matrix profile) ===")
-        gaze_df = preprocess_gaze_positions(gaze_df)
-
-        # Downsample to reduce memory while preserving pattern structure
-        gaze_df = downsample_gaze(gaze_df, factor=3)
-
-        tx = np.array(gaze_df['norm_pos_x'])
-        ty = np.array(gaze_df['norm_pos_y'])
-        rec_time_s = np.array(gaze_df['rec_time_s'])
-
-        pattern_results = extract_matrix_profile_patterns(
-            tx,
-            ty,
-            rec_time_s,
-            m=95,
-            k=10,
-            diff=2,
-            q_min=0.001,
-            q_max=0.01,
-            min_masks=5,
-            max_candidates=5000
-        )
-
-        if pattern_results is not None:
-            patterns_df = pattern_results['patterns_df']
-            patterns_df.to_csv(os.path.join(output_dir, 'scan_patterns.csv'), index=False)
-
-            plot_pattern_grid(pattern_results['snippets_x'], pattern_results['snippets_y'], output_dir,
-                              filename='scan_patterns.png', alpha_by_time=False)
-            plot_pattern_grid(pattern_results['snippets_x'], pattern_results['snippets_y'], output_dir,
-                              filename='scan_patterns_fade.png', alpha_by_time=True)
-            plot_pattern_time_series(tx, ty, rec_time_s, pattern_results['mask'], output_dir,
-                                     filename='scan_patterns_time_series.png')
-
-            snippet_xavg, snippet_yavg = compute_dtw_averages(tx, ty, rec_time_s, pattern_results['mask'])
-            if snippet_xavg and animation is not None:
-                np.save(os.path.join(output_dir, 'scan_patterns_dtw_xavg.npy'), np.array(snippet_xavg, dtype=object))
-                np.save(os.path.join(output_dir, 'scan_patterns_dtw_yavg.npy'), np.array(snippet_yavg, dtype=object))
+        all_fixations_path = os.path.join(data_root, "fixations.csv")
+        all_fixations = None
+        if os.path.exists(all_fixations_path):
+            all_fixations = normalize_fixation_cols(pd.read_csv(all_fixations_path))
         else:
-            print("Pattern extraction skipped.")
-    else:
-        print("Skipping scan pattern extraction (gaze_positions.csv not found).")
-    
-    # Continue with AOI/transition pipeline for all surfaces
-    aoi_data = []
-    for s in surfaces:
-        label = s["label"]
-        df = surface_data_map[label]
-        aoi_df = create_aoi_data_for_surface(df, label)
-        aoi_data.append(aoi_df)
+            print(f"Note: all-fixations file not found at: {all_fixations_path}")
 
-        label_slug = label.lower().replace(' ', '_')
-        aoi_counts = count_fixations_per_aoi(
-            aoi_df,
-            output_dir,
-            output_filename=f"aoi_fixation_counts_{label_slug}.csv"
-        )
-        calculate_aoi_durations(
-            aoi_df,
-            output_dir,
-            output_filename=f"aoi_durations_{label_slug}.csv"
-        )
-        visualize_fixation_heatmap(
-            aoi_counts,
-            output_dir,
-            output_filename=f"fixation_heatmap_{label_slug}.png"
-        )
-        visualize_fixation_density(
-            df,
-            output_dir,
-            output_filename=f"fixation_density_{label_slug}.png"
-        )
+        surface_order = [s["label"] for s in surfaces]
 
-    combined = pd.concat(aoi_data).sort_values('world_timestamp')
-    transitions = create_transition_sequence(combined, output_dir)
-    matrix = create_transition_matrix(transitions, output_dir, surface_order=surface_order)
-    visualize_transition_heatmap(matrix, output_dir)
-    visualize_transition_path(combined, surface_order, output_dir, output_filename="transition_path.png")
+        # STEP 2: Surface coverage
+        coverage = analyze_surface_coverage(surface_data_map, all_fixations)
 
-    cross_details = analyze_cross_screen_transitions(transitions, output_dir)
-    if cross_details is not None:
-        cross_df, cross_summary = cross_details
-        save_cross_screen_summary_and_visuals(cross_df, cross_summary, output_dir)
+        # STEP 2.5: Continuous gaze patterns (single gaze_positions.csv)
+        gaze_path = os.path.join(data_root, "gaze_positions.csv")
+        gaze_df = load_gaze_positions(gaze_path)
+        if gaze_df is not None:
+            print("\n=== EXTRACTING SCAN PATTERNS (matrix profile) ===")
+            gaze_df = preprocess_gaze_positions(gaze_df)
+
+            # Downsample to reduce memory while preserving pattern structure
+            gaze_df = downsample_gaze(gaze_df, factor=3)
+
+            tx = np.array(gaze_df['norm_pos_x'])
+            ty = np.array(gaze_df['norm_pos_y'])
+            rec_time_s = np.array(gaze_df['rec_time_s'])
+
+            pattern_results = extract_matrix_profile_patterns(
+                tx,
+                ty,
+                rec_time_s,
+                m=95,
+                k=10,
+                diff=2,
+                q_min=0.001,
+                q_max=0.01,
+                min_masks=5,
+                max_candidates=5000
+            )
+
+            if pattern_results is not None:
+                patterns_df = pattern_results['patterns_df']
+                patterns_df.to_csv(os.path.join(output_dir, 'scan_patterns.csv'), index=False)
+
+                plot_pattern_grid(pattern_results['snippets_x'], pattern_results['snippets_y'], output_dir,
+                                  filename='scan_patterns.png', alpha_by_time=False)
+                plot_pattern_grid(pattern_results['snippets_x'], pattern_results['snippets_y'], output_dir,
+                                  filename='scan_patterns_fade.png', alpha_by_time=True)
+                plot_pattern_time_series(tx, ty, rec_time_s, pattern_results['mask'], output_dir,
+                                         filename='scan_patterns_time_series.png')
+
+                snippet_xavg, snippet_yavg = compute_dtw_averages(tx, ty, rec_time_s, pattern_results['mask'])
+                if snippet_xavg and animation is not None:
+                    np.save(os.path.join(output_dir, 'scan_patterns_dtw_xavg.npy'), np.array(snippet_xavg, dtype=object))
+                    np.save(os.path.join(output_dir, 'scan_patterns_dtw_yavg.npy'), np.array(snippet_yavg, dtype=object))
+            else:
+                print("Pattern extraction skipped.")
+        else:
+            print("Skipping scan pattern extraction (gaze_positions.csv not found).")
+
+        # Continue with AOI/transition pipeline for all surfaces
+        aoi_data = []
+        for s in surfaces:
+            label = s["label"]
+            df = surface_data_map[label]
+            aoi_df = create_aoi_data_for_surface(df, label)
+            aoi_data.append(aoi_df)
+
+            label_slug = label.lower().replace(' ', '_')
+            aoi_counts = count_fixations_per_aoi(
+                aoi_df,
+                output_dir,
+                output_filename=f"aoi_fixation_counts_{label_slug}.csv"
+            )
+            calculate_aoi_durations(
+                aoi_df,
+                output_dir,
+                output_filename=f"aoi_durations_{label_slug}.csv"
+            )
+            visualize_fixation_heatmap(
+                aoi_counts,
+                output_dir,
+                output_filename=f"fixation_heatmap_{label_slug}.png"
+            )
+            visualize_fixation_density(
+                df,
+                output_dir,
+                output_filename=f"fixation_density_{label_slug}.png"
+            )
+
+        combined = pd.concat(aoi_data).sort_values('world_timestamp')
+        transitions = create_transition_sequence(combined, output_dir)
+        matrix = create_transition_matrix(transitions, output_dir, surface_order=surface_order)
+        visualize_transition_heatmap(matrix, output_dir)
+        visualize_transition_path(combined, surface_order, output_dir, output_filename="transition_path.png")
+        visualize_transition_flow_map(transitions, surface_order, output_dir, filename="transition_flow_map.png")
+
+        cross_details = analyze_cross_screen_transitions(transitions, output_dir)
+        if cross_details is not None:
+            cross_df, cross_summary = cross_details
+            save_cross_screen_summary_and_visuals(cross_df, cross_summary, output_dir)
+            visualize_cross_transition_density(transitions, surface_order, output_dir,
+                                               filename="cross_transition_density.png")
+
+        compute_aoi_summary(combined, output_dir, filename="aoi_summary.csv")
+        compute_transition_summary(transitions, output_dir, filename="transition_summary.csv")
     
     print("\n=== ANALYSIS COMPLETE ===")
     print("New files: scan_patterns.csv/png (if gaze_positions.csv is available)")
