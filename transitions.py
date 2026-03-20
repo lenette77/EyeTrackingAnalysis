@@ -1,5 +1,6 @@
 import os
 import pandas as pd
+import numpy as np
 import matplotlib.pyplot as plt
 import seaborn as sns
 
@@ -324,8 +325,16 @@ def _aoi_center(aoi_id, offsets, grid_size=3):
     return x_off + (col + 0.5), y_off + (row + 0.5)
 
 
-def _draw_transition_flow(ax, transitions, surface_order, title,
-                          grid_color='lightgray', label_color='black', flow_color='steelblue'):
+def _draw_transition_flow(
+    ax,
+    transitions,
+    surface_order,
+    title,
+    grid_color='lightgray',
+    label_color='black',
+    flow_color='steelblue',
+    aspect='equal'
+):
     """Draw transition flow map on an existing axis."""
     offsets = _surface_offsets(surface_order)
     counts = transitions.groupby(['aoi_id', 'next_aoi']).size().reset_index(name='count')
@@ -349,13 +358,18 @@ def _draw_transition_flow(ax, transitions, surface_order, title,
 
     max_x = max(pos[0] for pos in offsets.values()) + grid_size + 0.2
     max_y = max(pos[1] for pos in offsets.values()) + grid_size + 0.2
-    ax.set_aspect('equal')
+    ax.set_aspect(aspect)
+    if aspect != 'equal':
+        ax.set_adjustable('box')
     ax.set_xlim(-0.2, max_x)
     ax.set_ylim(-0.8, max_y)
     ax.invert_yaxis()
     ax.set_xticks([])
     ax.set_yticks([])
     ax.set_title(title)
+    ax.set_frame_on(False)
+    for spine in ax.spines.values():
+        spine.set_visible(False)
 
 
 def visualize_transition_flow_map(transitions, surface_order, output_dir, filename, title="Transition Flow Map"):
@@ -403,12 +417,50 @@ def visualize_combined_density_and_flow_map(surface_data_map, transitions, outpu
         surface_order = list(surface_data_map.keys())
 
     fig = plt.figure(figsize=(14, 12), facecolor='black')
-    grid = fig.add_gridspec(3, 3, height_ratios=[1.0, 1.0, 1.6], hspace=0.35, wspace=0.22)
+    grid = fig.add_gridspec(4, 3, height_ratios=[1.0, 1.0, 1.0, 1.0], hspace=0.35, wspace=0.22)
 
     empty_top_left = fig.add_subplot(grid[1, 0])
     empty_top_right = fig.add_subplot(grid[1, 2])
     empty_top_left.axis('off')
     empty_top_right.axis('off')
+
+    def _gaussian_kernel_2d(sigma, size):
+        axis = np.arange(size) - (size - 1) / 2.0
+        x, y = np.meshgrid(axis, axis)
+        kernel = np.exp(-(x**2 + y**2) / (2.0 * sigma**2))
+        return kernel / kernel.sum()
+
+    def _smooth_density(density, sigma=1.6):
+        size = max(3, int(6 * sigma) | 1)
+        kernel = _gaussian_kernel_2d(sigma, size)
+        pad = size // 2
+        padded = np.pad(density, pad, mode='constant')
+        smoothed = np.zeros_like(density, dtype=float)
+        for i in range(size):
+            for j in range(size):
+                smoothed += kernel[i, j] * padded[i:i + density.shape[0], j:j + density.shape[1]]
+        return smoothed
+
+    def _density_from_points(df, bins=100):
+        hist, xedges, yedges = np.histogram2d(
+            df['norm_pos_x'].values,
+            df['norm_pos_y'].values,
+            bins=bins,
+            range=[[0, 1], [0, 1]]
+        )
+        return _smooth_density(hist, sigma=1.6)
+
+    global_points = []
+    for _, df in surface_data_map.items():
+        on_surf = df[df['on_surf'] == True]
+        if not on_surf.empty:
+            on_surf = collapse_fixations(on_surf, group_cols=['fixationid', 'surface'])
+            global_points.append(on_surf[['norm_pos_x', 'norm_pos_y']])
+
+    global_max = 0.0
+    if global_points:
+        all_points = pd.concat(global_points, ignore_index=True)
+        global_max = _density_from_points(all_points).max()
 
     for panel, (r, c), title in panels:
         ax = fig.add_subplot(grid[r, c])
@@ -422,16 +474,15 @@ def visualize_combined_density_and_flow_map(surface_data_map, transitions, outpu
         if not data.empty:
             data = collapse_fixations(data, group_cols=['fixationid', 'surface'])
 
-        if len(data) >= 2:
-            sns.kdeplot(
-                data=data,
-                x='norm_pos_x',
-                y='norm_pos_y',
-                fill=True,
-                levels=50,
+        if len(data) >= 2 and global_max > 0:
+            density = _density_from_points(data)
+            ax.imshow(
+                density.T,
+                extent=(0, 1, 1, 0),
                 cmap='mako',
-                bw_adjust=0.8,
-                ax=ax
+                vmin=0,
+                vmax=global_max,
+                interpolation='bilinear'
             )
         elif len(data) == 1:
             ax.scatter(data['norm_pos_x'], data['norm_pos_y'], color='deepskyblue', s=30)
@@ -446,7 +497,7 @@ def visualize_combined_density_and_flow_map(surface_data_map, transitions, outpu
         ax.set_ylabel('Normalized Y', color='white', fontsize=8)
         ax.tick_params(colors='white', labelsize=7)
 
-    ax_flow = fig.add_subplot(grid[2, :])
+    ax_flow = fig.add_subplot(grid[2:, :])
     ax_flow.set_facecolor('black')
     _draw_transition_flow(
         ax_flow,
@@ -455,7 +506,8 @@ def visualize_combined_density_and_flow_map(surface_data_map, transitions, outpu
         'Transition Flow Map',
         grid_color='gray',
         label_color='white',
-        flow_color='deepskyblue'
+        flow_color='deepskyblue',
+        aspect='auto'
     )
     ax_flow.title.set_color('white')
 
