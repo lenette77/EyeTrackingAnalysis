@@ -8,16 +8,20 @@ from io_utils import load_surface_fixations, load_all_fixations
 from aoi_analysis import analyze_surface_coverage, run_aoi_metrics
 from scan_patterns import run_scan_patterns
 from transitions import run_transition_analysis
+from participant_metrics import compute_participant_metrics, save_participant_summary
+from group_aggregation import main as run_group_aggregation
 
 warnings.filterwarnings('ignore')
 
 def main():
-    """Run the full AOI, transition, and scan-pattern pipeline for each run."""
+    """Run per-participant analyses, participant metrics, and group aggregation."""
     print("=" * 60)
     print("EYE-TRACKING ANALYSIS: AOIs + SCAN PATTERNS")
     print("=" * 60)
 
     script_dir = os.path.dirname(os.path.abspath(__file__))
+
+    summary_rows = []
 
     for run_id in RUN_IDS:
         print("\n" + "=" * 60)
@@ -41,6 +45,19 @@ def main():
 
         combined = run_aoi_metrics(surface_data_map, SURFACES, output_dir)
         run_transition_analysis(combined, surface_order, output_dir, surface_data_map=surface_data_map)
+
+        summary = compute_participant_metrics(run_id, surface_data_map, combined, output_dir)
+        if summary is not None:
+            summary_rows.append(summary)
+
+    print("\n=== PARTICIPANT METRICS ===")
+    save_participant_summary(summary_rows, os.path.join(script_dir, 'output'))
+
+    print("\n=== GROUP AGGREGATION ===")
+    try:
+        run_group_aggregation()
+    except FileNotFoundError as exc:
+        print(str(exc))
 
     print("\n=== ANALYSIS COMPLETE ===")
     print("New files: scan_patterns.csv/png (if gaze_positions.csv is available)")

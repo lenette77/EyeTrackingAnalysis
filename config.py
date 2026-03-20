@@ -1,6 +1,7 @@
 import os
 
 DATA_BASE = os.path.join(r"C:\Users\lenny\Desktop\Wisco\HFML Lab\2026_03_03")
+GROUP_DATA_BASE = os.path.join(r"Z:\NSF_Remote_trucking\Experiment_2\Eye tracking\REMOTE DRIVING EYE TRACKING")
 RUN_IDS = ["000", "001"]
 SURFACES = [
     {"label": "Left", "file": "fixations_on_surface_Left.csv", "id": 1},

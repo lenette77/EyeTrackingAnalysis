@@ -79,8 +79,14 @@ def collapse_fixations(surface_data, group_cols=None):
     """Collapse multiple rows per fixation into one row using sensible aggregates."""
     if group_cols is None:
         group_cols = ['fixationid']
-    if 'surface' in surface_data.columns:
-        group_cols = ['fixationid', 'surface']
+    # If surface labels exist, include them unless caller provided a different set.
+    if 'surface' in surface_data.columns and 'surface' not in group_cols:
+        group_cols = list(group_cols) + ['surface']
+
+    # Drop any grouping columns that are not present to avoid KeyError.
+    group_cols = [col for col in group_cols if col in surface_data.columns]
+    if not group_cols:
+        return surface_data
 
     agg_map = {}
     for col in surface_data.columns:
@@ -96,11 +102,23 @@ def collapse_fixations(surface_data, group_cols=None):
     return surface_data.groupby(group_cols, as_index=False).agg(agg_map)
 
 
-def create_aoi_data(surface_data):
+def create_aoi_data(surface_data, include_off_surf=False):
     """Assign AOI to each fixation on the surface."""
-    data = surface_data[surface_data['on_surf'] == True].copy()
+    if include_off_surf:
+        data = surface_data.copy()
+    else:
+        data = surface_data[surface_data['on_surf'] == True].copy()
+
     data = collapse_fixations(data)
-    data['aoi'] = data.apply(lambda row: assign_aoi(row['norm_pos_x'], row['norm_pos_y']), axis=1)
+
+    if include_off_surf:
+        data['aoi'] = data.apply(
+            lambda row: assign_aoi(row['norm_pos_x'], row['norm_pos_y'])
+            if row.get('on_surf') is True else 'OFF_SURF',
+            axis=1
+        )
+    else:
+        data['aoi'] = data.apply(lambda row: assign_aoi(row['norm_pos_x'], row['norm_pos_y']), axis=1)
     print("=" * 60)
     print("STEP 3: AOI Assignment (3x3 Grid)")
     print("=" * 60)
@@ -110,11 +128,11 @@ def create_aoi_data(surface_data):
     return data
 
 
-def create_aoi_data_for_surface(surface_data, surface_label):
+def create_aoi_data_for_surface(surface_data, surface_label, include_off_surf=False):
     """Create AOI assignments and tag rows with surface label (surface-aware AOIs)."""
     labeled = surface_data.copy()
     labeled['surface'] = surface_label
-    df = create_aoi_data(labeled)
+    df = create_aoi_data(labeled, include_off_surf=include_off_surf)
     df['surface'] = surface_label
     df['aoi_id'] = df['surface'] + '|' + df['aoi'].astype(str)
     return df

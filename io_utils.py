@@ -27,15 +27,27 @@ def normalize_fixation_cols(df):
     return data
 
 
-def load_surface_fixations(surfaces_dir, surfaces):
+def load_surface_fixations(surfaces_dir, surfaces, allow_missing=False):
     """Load and normalize per-surface fixation files."""
     surface_data_map = {}
     for surface in surfaces:
         path = os.path.join(surfaces_dir, surface["file"])
+        if not os.path.exists(path):
+            if allow_missing:
+                print(f"Missing surface file; skipping: {path}")
+                continue
+            return None
+
         df = load_data(path)
         if df is None:
+            if allow_missing:
+                continue
             return None
+
         surface_data_map[surface["label"]] = normalize_fixation_cols(df)
+
+    if not surface_data_map:
+        return None
     return surface_data_map
 
 
