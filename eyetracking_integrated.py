@@ -11,9 +11,6 @@ from transitions import run_transition_analysis
 
 warnings.filterwarnings('ignore')
 
-
-
-# ========== UPDATED MAIN ==========
 def main():
     """Run the full AOI, transition, and scan-pattern pipeline for each run."""
     print("=" * 60)
@@ -43,7 +40,7 @@ def main():
         run_scan_patterns(data_root, output_dir)
 
         combined = run_aoi_metrics(surface_data_map, SURFACES, output_dir)
-        run_transition_analysis(combined, surface_order, output_dir)
+        run_transition_analysis(combined, surface_order, output_dir, surface_data_map=surface_data_map)
 
     print("\n=== ANALYSIS COMPLETE ===")
     print("New files: scan_patterns.csv/png (if gaze_positions.csv is available)")

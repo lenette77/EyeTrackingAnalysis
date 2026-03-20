@@ -324,19 +324,11 @@ def _aoi_center(aoi_id, offsets, grid_size=3):
     return x_off + (col + 0.5), y_off + (row + 0.5)
 
 
-def visualize_transition_flow_map(transitions, surface_order, output_dir, filename, title="Transition Flow Map"):
-    """Flow map with shaded paths (no labels)."""
-    if transitions.empty:
-        print("No transitions to plot; skipping flow map.")
-        return
-
+def _draw_transition_flow(ax, transitions, surface_order, title):
+    """Draw transition flow map on an existing axis."""
     offsets = _surface_offsets(surface_order)
     counts = transitions.groupby(['aoi_id', 'next_aoi']).size().reset_index(name='count')
     max_count = max(counts['count']) if len(counts) else 1
-
-    plt.figure(figsize=(12, 4))
-    ax = plt.gca()
-    ax.set_aspect('equal')
 
     grid_size = 3
     for label, (x_off, y_off) in offsets.items():
@@ -356,6 +348,7 @@ def visualize_transition_flow_map(transitions, surface_order, output_dir, filena
 
     max_x = max(pos[0] for pos in offsets.values()) + grid_size + 0.2
     max_y = max(pos[1] for pos in offsets.values()) + grid_size + 0.2
+    ax.set_aspect('equal')
     ax.set_xlim(-0.2, max_x)
     ax.set_ylim(-0.8, max_y)
     ax.invert_yaxis()
@@ -363,10 +356,102 @@ def visualize_transition_flow_map(transitions, surface_order, output_dir, filena
     ax.set_yticks([])
     ax.set_title(title)
 
+
+def visualize_transition_flow_map(transitions, surface_order, output_dir, filename, title="Transition Flow Map"):
+    """Flow map with shaded paths (no labels)."""
+    if transitions.empty:
+        print("No transitions to plot; skipping flow map.")
+        return
+
+    plt.figure(figsize=(12, 4))
+    ax = plt.gca()
+    _draw_transition_flow(ax, transitions, surface_order, title)
+
     os.makedirs(output_dir, exist_ok=True)
     plt.tight_layout()
     plt.savefig(os.path.join(output_dir, filename), dpi=300)
     plt.close()
+
+
+def visualize_combined_density_and_flow_map(surface_data_map, transitions, output_dir, filename):
+    """Render fixation densities and transition flow map in one image."""
+    if not surface_data_map:
+        print("No surface data available; skipping combined density/flow map.")
+        return
+    if transitions.empty:
+        print("No transitions available; skipping combined density/flow map.")
+        return
+
+    label_lookup = {}
+    for label, df in surface_data_map.items():
+        label_lookup[label.lower()] = (label, df)
+
+    def _pick_surface(name):
+        return label_lookup.get(name.lower())
+
+    panels = [
+        (_pick_surface('Left'), (0, 0), 'Left'),
+        (_pick_surface('Mid'), (0, 1), 'Mid'),
+        (_pick_surface('Right'), (0, 2), 'Right'),
+        (_pick_surface('Dashboard'), (1, 1), 'Dashboard'),
+    ]
+
+    present_labels = [entry[0][0] for entry in panels if entry[0] is not None]
+    surface_order = [label for label in ['Left', 'Mid', 'Right', 'Dashboard'] if label in present_labels]
+    if not surface_order:
+        surface_order = list(surface_data_map.keys())
+
+    fig = plt.figure(figsize=(14, 12), facecolor='black')
+    grid = fig.add_gridspec(3, 3, height_ratios=[1.0, 1.0, 1.6], hspace=0.35, wspace=0.22)
+
+    empty_top_left = fig.add_subplot(grid[1, 0])
+    empty_top_right = fig.add_subplot(grid[1, 2])
+    empty_top_left.axis('off')
+    empty_top_right.axis('off')
+
+    for panel, (r, c), title in panels:
+        ax = fig.add_subplot(grid[r, c])
+        ax.set_facecolor('black')
+        if panel is None:
+            ax.axis('off')
+            continue
+
+        _, raw_df = panel
+        data = raw_df[raw_df['on_surf'] == True].copy()
+        if not data.empty:
+            data = collapse_fixations(data, group_cols=['fixationid', 'surface'])
+
+        if len(data) >= 2:
+            sns.kdeplot(
+                data=data,
+                x='norm_pos_x',
+                y='norm_pos_y',
+                fill=True,
+                levels=50,
+                cmap='mako',
+                bw_adjust=0.8,
+                ax=ax
+            )
+        elif len(data) == 1:
+            ax.scatter(data['norm_pos_x'], data['norm_pos_y'], color='deepskyblue', s=30)
+        else:
+            ax.text(0.5, 0.5, 'No Data', ha='center', va='center', color='white')
+
+        ax.set_xlim(0, 1)
+        ax.set_ylim(0, 1)
+        ax.invert_yaxis()
+        ax.set_title(f'{title} Fixation Density', color='white', fontsize=10)
+        ax.set_xlabel('Normalized X', color='white', fontsize=8)
+        ax.set_ylabel('Normalized Y', color='white', fontsize=8)
+        ax.tick_params(colors='white', labelsize=7)
+
+    ax_flow = fig.add_subplot(grid[2, :])
+    _draw_transition_flow(ax_flow, transitions, surface_order, 'Transition Flow Map')
+
+    os.makedirs(output_dir, exist_ok=True)
+    fig.savefig(os.path.join(output_dir, filename), dpi=300, facecolor=fig.get_facecolor(), bbox_inches='tight')
+    print(f"Saved to: {output_dir}/{filename}")
+    plt.close(fig)
 
 
 def visualize_cross_transition_density(transitions, surface_order, output_dir, filename):
@@ -439,7 +524,7 @@ def compute_transition_summary(transitions, output_dir, filename):
     return summary
 
 
-def run_transition_analysis(combined, surface_order, output_dir):
+def run_transition_analysis(combined, surface_order, output_dir, surface_data_map=None):
     """Compute transition tables and visualizations."""
     transitions = create_transition_sequence(combined, output_dir)
     matrix = create_transition_matrix(transitions, output_dir, surface_order=surface_order)
@@ -468,3 +553,11 @@ def run_transition_analysis(combined, surface_order, output_dir):
                                            filename="cross_transition_density.png")
 
     compute_transition_summary(transitions, output_dir, filename="transition_summary.csv")
+
+    if surface_data_map is not None:
+        visualize_combined_density_and_flow_map(
+            surface_data_map,
+            transitions,
+            output_dir,
+            filename="fixation_density_and_transition_flow_map.png"
+        )
