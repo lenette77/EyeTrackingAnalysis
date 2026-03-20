@@ -324,7 +324,8 @@ def _aoi_center(aoi_id, offsets, grid_size=3):
     return x_off + (col + 0.5), y_off + (row + 0.5)
 
 
-def _draw_transition_flow(ax, transitions, surface_order, title):
+def _draw_transition_flow(ax, transitions, surface_order, title,
+                          grid_color='lightgray', label_color='black', flow_color='steelblue'):
     """Draw transition flow map on an existing axis."""
     offsets = _surface_offsets(surface_order)
     counts = transitions.groupby(['aoi_id', 'next_aoi']).size().reset_index(name='count')
@@ -333,9 +334,9 @@ def _draw_transition_flow(ax, transitions, surface_order, title):
     grid_size = 3
     for label, (x_off, y_off) in offsets.items():
         for i in range(grid_size + 1):
-            ax.plot([x_off, x_off + grid_size], [y_off + i, y_off + i], color='lightgray', linewidth=0.6)
-            ax.plot([x_off + i, x_off + i], [y_off, y_off + grid_size], color='lightgray', linewidth=0.6)
-        ax.text(x_off + 1.5, y_off - 0.4, label, ha='center', va='top')
+            ax.plot([x_off, x_off + grid_size], [y_off + i, y_off + i], color=grid_color, linewidth=0.6)
+            ax.plot([x_off + i, x_off + i], [y_off, y_off + grid_size], color=grid_color, linewidth=0.6)
+        ax.text(x_off + 1.5, y_off - 0.4, label, ha='center', va='top', color=label_color)
 
     for _, row in counts.iterrows():
         start = _aoi_center(row['aoi_id'], offsets, grid_size=grid_size)
@@ -344,7 +345,7 @@ def _draw_transition_flow(ax, transitions, surface_order, title):
             continue
         alpha = 0.1 + 0.8 * (row['count'] / max_count)
         linewidth = 0.5 + 2.5 * (row['count'] / max_count)
-        ax.plot([start[0], end[0]], [start[1], end[1]], color='steelblue', alpha=alpha, linewidth=linewidth)
+        ax.plot([start[0], end[0]], [start[1], end[1]], color=flow_color, alpha=alpha, linewidth=linewidth)
 
     max_x = max(pos[0] for pos in offsets.values()) + grid_size + 0.2
     max_y = max(pos[1] for pos in offsets.values()) + grid_size + 0.2
@@ -446,7 +447,17 @@ def visualize_combined_density_and_flow_map(surface_data_map, transitions, outpu
         ax.tick_params(colors='white', labelsize=7)
 
     ax_flow = fig.add_subplot(grid[2, :])
-    _draw_transition_flow(ax_flow, transitions, surface_order, 'Transition Flow Map')
+    ax_flow.set_facecolor('black')
+    _draw_transition_flow(
+        ax_flow,
+        transitions,
+        surface_order,
+        'Transition Flow Map',
+        grid_color='gray',
+        label_color='white',
+        flow_color='deepskyblue'
+    )
+    ax_flow.title.set_color('white')
 
     os.makedirs(output_dir, exist_ok=True)
     fig.savefig(os.path.join(output_dir, filename), dpi=300, facecolor=fig.get_facecolor(), bbox_inches='tight')

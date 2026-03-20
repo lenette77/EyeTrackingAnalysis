@@ -119,9 +119,9 @@ def create_aoi_data(surface_data, include_off_surf=False):
         )
     else:
         data['aoi'] = data.apply(lambda row: assign_aoi(row['norm_pos_x'], row['norm_pos_y']), axis=1)
-    print("=" * 60)
+    print("-" * 60)
     print("STEP 3: AOI Assignment (3x3 Grid)")
-    print("=" * 60)
+    print("-" * 60)
     print(f"Assigned {len(data)} fixations to AOIs")
     print("AOI assignments:")
     print(data[['fixationid', 'norm_pos_x', 'norm_pos_y', 'aoi']].head(10))

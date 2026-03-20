@@ -1,5 +1,3 @@
-"""Eye-Tracking Analysis: Multi-Surface AOIs + Continuous Scan Patterns."""
-
 import os
 import warnings
 
@@ -15,18 +13,17 @@ warnings.filterwarnings('ignore')
 
 def main():
     """Run per-participant analyses, participant metrics, and group aggregation."""
-    print("=" * 60)
+    print("-" * 60)
     print("EYE-TRACKING ANALYSIS: AOIs + SCAN PATTERNS")
-    print("=" * 60)
-
+    print("-" * 60)
     script_dir = os.path.dirname(os.path.abspath(__file__))
 
     summary_rows = []
 
     for run_id in RUN_IDS:
-        print("\n" + "=" * 60)
-        print(f"PROCESSING RUN: {run_id}")
-        print("=" * 60)
+        print("\n" + "-" * 60)
+        print(f"Currently processing RUN: {run_id}")
+        print("-" * 60)
 
         data_root = os.path.join(DATA_BASE, run_id, "exports", run_id)
         surfaces_dir = os.path.join(data_root, "surfaces")
