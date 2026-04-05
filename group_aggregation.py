@@ -22,6 +22,27 @@ from transitions import (
 )
 
 
+DELAY_LABELS = [
+    'baseline',
+    'ae1',
+    'ae2',
+    'ae3',
+    'delay1',
+    'delay2',
+    'delay3',
+]
+
+DELAY_OUTPUT_LABELS = {
+    'baseline': 'baseline',
+    'ae1': 'AE1',
+    'ae2': 'AE2',
+    'ae3': 'AE3',
+    'delay1': 'delay1',
+    'delay2': 'delay2',
+    'delay3': 'delay3',
+}
+
+
 def _find_export_roots(session_dir):
     exports_dir = os.path.join(session_dir, 'exports')
     if os.path.isdir(exports_dir):
@@ -41,6 +62,16 @@ def _iter_group_sessions(group_dir):
         path = os.path.join(group_dir, name)
         if os.path.isdir(path):
             yield name, path
+
+
+def _match_delay_label(session_name):
+    if '_' not in session_name:
+        return None
+    remainder = session_name.split('_', 1)[1].lower()
+    for label in DELAY_LABELS:
+        if remainder == label or remainder.startswith(label):
+            return label
+    return None
 
 
 def _build_session_transitions(surface_data_map, session_id):
@@ -348,6 +379,49 @@ def aggregate_group_dirs(group_name, group_dirs, output_base):
     _finalize_group(group_name, combined_surface_map, transitions_all, sequences_all, output_base)
 
 
+def aggregate_group_dirs_by_delay(group_name, group_dirs, output_base, delay_label):
+    print('=' * 60)
+    print(f'AGGREGATING GROUP (PREFIX + DELAY): {group_name}')
+    print('=' * 60)
+
+    surface_data_combined = {surface['label']: [] for surface in SURFACES}
+    transitions_all = []
+    sequences_all = []
+
+    for group_dir in group_dirs:
+        if not os.path.isdir(group_dir):
+            continue
+        for session_name, session_dir in _iter_group_sessions(group_dir):
+            if _match_delay_label(session_name) != delay_label:
+                continue
+
+            export_roots = _find_export_roots(session_dir)
+            if not export_roots:
+                print(f'No exports for {session_name}; skipping.')
+                continue
+
+            for export_root in export_roots:
+                surfaces_dir = os.path.join(export_root, 'surfaces')
+                surface_data_map = load_surface_fixations(surfaces_dir, SURFACES, allow_missing=True)
+                if surface_data_map is None:
+                    continue
+
+                participant_id = os.path.basename(group_dir)
+                session_id = f'{participant_id}:{session_name}:{os.path.basename(export_root)}'
+                _accumulate_session(surface_data_map, session_id, surface_data_combined, transitions_all, sequences_all)
+
+    if not any(surface_data_combined[label] for label in surface_data_combined):
+        print(f'No surface data found for group {group_name}; skipping.')
+        return
+
+    combined_surface_map = {
+        label: pd.concat(parts, ignore_index=True) if parts else pd.DataFrame()
+        for label, parts in surface_data_combined.items()
+    }
+
+    _finalize_group(group_name, combined_surface_map, transitions_all, sequences_all, output_base)
+
+
 def aggregate_runs_as_group(group_name, run_ids, output_base):
     print('=' * 60)
     print(f'AGGREGATING GROUP (RUN IDS): {group_name}')
@@ -400,6 +474,11 @@ def main():
         for prefix, group_names in prefix_groups.items():
             group_dirs = [os.path.join(GROUP_DATA_BASE, name) for name in group_names]
             aggregate_group_dirs(prefix, group_dirs, output_base)
+
+            for delay_label in DELAY_LABELS:
+                output_label = DELAY_OUTPUT_LABELS[delay_label]
+                delay_group_name = f'{prefix}_{output_label}'
+                aggregate_group_dirs_by_delay(delay_group_name, group_dirs, output_base, delay_label)
     else:
         print(f'GROUP_DATA_BASE not found: {GROUP_DATA_BASE}')
 
