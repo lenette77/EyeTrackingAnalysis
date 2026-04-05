@@ -24,9 +24,6 @@ from transitions import (
 
 DELAY_LABELS = [
     'baseline',
-    'ae1',
-    'ae2',
-    'ae3',
     'delay1',
     'delay2',
     'delay3',
@@ -34,9 +31,6 @@ DELAY_LABELS = [
 
 DELAY_OUTPUT_LABELS = {
     'baseline': 'baseline',
-    'ae1': 'AE1',
-    'ae2': 'AE2',
-    'ae3': 'AE3',
     'delay1': 'delay1',
     'delay2': 'delay2',
     'delay3': 'delay3',
@@ -72,6 +66,13 @@ def _match_delay_label(session_name):
         if remainder == label or remainder.startswith(label):
             return label
     return None
+
+
+def _is_ae_session(session_name):
+    if '_' not in session_name:
+        return False
+    remainder = session_name.split('_', 1)[1].lower()
+    return remainder.startswith('ae')
 
 
 def _build_session_transitions(surface_data_map, session_id):
@@ -313,6 +314,8 @@ def aggregate_group(group_name, group_dir, output_base):
     sequences_all = []
 
     for session_name, session_dir in _iter_group_sessions(group_dir):
+        if _is_ae_session(session_name):
+            continue
         export_roots = _find_export_roots(session_dir)
         if not export_roots:
             print(f'No exports for {session_name}; skipping.')
@@ -352,6 +355,8 @@ def aggregate_group_dirs(group_name, group_dirs, output_base):
         if not os.path.isdir(group_dir):
             continue
         for session_name, session_dir in _iter_group_sessions(group_dir):
+            if _is_ae_session(session_name):
+                continue
             export_roots = _find_export_roots(session_dir)
             if not export_roots:
                 print(f'No exports for {session_name}; skipping.')
@@ -392,6 +397,8 @@ def aggregate_group_dirs_by_delay(group_name, group_dirs, output_base, delay_lab
         if not os.path.isdir(group_dir):
             continue
         for session_name, session_dir in _iter_group_sessions(group_dir):
+            if _is_ae_session(session_name):
+                continue
             if _match_delay_label(session_name) != delay_label:
                 continue
 
