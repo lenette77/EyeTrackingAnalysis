@@ -308,6 +308,46 @@ def aggregate_group(group_name, group_dir, output_base):
     _finalize_group(group_name, combined_surface_map, transitions_all, sequences_all, output_base)
 
 
+def aggregate_group_dirs(group_name, group_dirs, output_base):
+    print('=' * 60)
+    print(f'AGGREGATING GROUP (PREFIX): {group_name}')
+    print('=' * 60)
+
+    surface_data_combined = {surface['label']: [] for surface in SURFACES}
+    transitions_all = []
+    sequences_all = []
+
+    for group_dir in group_dirs:
+        if not os.path.isdir(group_dir):
+            continue
+        for session_name, session_dir in _iter_group_sessions(group_dir):
+            export_roots = _find_export_roots(session_dir)
+            if not export_roots:
+                print(f'No exports for {session_name}; skipping.')
+                continue
+
+            for export_root in export_roots:
+                surfaces_dir = os.path.join(export_root, 'surfaces')
+                surface_data_map = load_surface_fixations(surfaces_dir, SURFACES, allow_missing=True)
+                if surface_data_map is None:
+                    continue
+
+                participant_id = os.path.basename(group_dir)
+                session_id = f'{participant_id}:{session_name}:{os.path.basename(export_root)}'
+                _accumulate_session(surface_data_map, session_id, surface_data_combined, transitions_all, sequences_all)
+
+    if not any(surface_data_combined[label] for label in surface_data_combined):
+        print(f'No surface data found for group {group_name}; skipping.')
+        return
+
+    combined_surface_map = {
+        label: pd.concat(parts, ignore_index=True) if parts else pd.DataFrame()
+        for label, parts in surface_data_combined.items()
+    }
+
+    _finalize_group(group_name, combined_surface_map, transitions_all, sequences_all, output_base)
+
+
 def aggregate_runs_as_group(group_name, run_ids, output_base):
     print('=' * 60)
     print(f'AGGREGATING GROUP (RUN IDS): {group_name}')
@@ -347,11 +387,19 @@ def main():
     os.makedirs(output_base, exist_ok=True)
 
     if GROUP_DATA_BASE and os.path.isdir(GROUP_DATA_BASE):
+        prefix_groups = {'A': [], 'NA': []}
         for name in os.listdir(GROUP_DATA_BASE):
             group_dir = os.path.join(GROUP_DATA_BASE, name)
             if not os.path.isdir(group_dir):
                 continue
-            aggregate_group(name, group_dir, output_base)
+            if name.startswith('NA'):
+                prefix_groups['NA'].append(name)
+            elif name.startswith('A'):
+                prefix_groups['A'].append(name)
+
+        for prefix, group_names in prefix_groups.items():
+            group_dirs = [os.path.join(GROUP_DATA_BASE, name) for name in group_names]
+            aggregate_group_dirs(prefix, group_dirs, output_base)
     else:
         print(f'GROUP_DATA_BASE not found: {GROUP_DATA_BASE}')
 
