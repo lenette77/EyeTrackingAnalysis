@@ -1,3 +1,4 @@
+import argparse
 import os
 import math
 
@@ -467,12 +468,11 @@ def aggregate_runs_as_group(group_name, run_ids, output_base):
     _finalize_group(group_name, combined_surface_map, transitions_all, sequences_all, output_base)
 
 
-def main():
+def main(include_participants=False, include_delays=False, include_demo_runs=False):
     output_base = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'output', 'groups')
     os.makedirs(output_base, exist_ok=True)
 
     if GROUP_DATA_BASE and os.path.isdir(GROUP_DATA_BASE):
-        participant_names = []
         prefix_groups = {'A': [], 'NA': []}
         for name in os.listdir(GROUP_DATA_BASE):
             group_dir = os.path.join(GROUP_DATA_BASE, name)
@@ -480,29 +480,54 @@ def main():
                 continue
             if name.startswith('NA'):
                 prefix_groups['NA'].append(name)
-                participant_names.append(name)
             elif name.startswith('A'):
                 prefix_groups['A'].append(name)
-                participant_names.append(name)
 
-        for participant in participant_names:
-            participant_dir = os.path.join(GROUP_DATA_BASE, participant)
-            aggregate_group(participant, participant_dir, output_base)
+        if include_participants:
+            participant_names = prefix_groups['A'] + prefix_groups['NA']
+            for participant in participant_names:
+                participant_dir = os.path.join(GROUP_DATA_BASE, participant)
+                aggregate_group(participant, participant_dir, output_base)
 
         for prefix, group_names in prefix_groups.items():
             group_dirs = [os.path.join(GROUP_DATA_BASE, name) for name in group_names]
             aggregate_group_dirs(prefix, group_dirs, output_base)
 
-            for delay_label in DELAY_LABELS:
-                output_label = DELAY_OUTPUT_LABELS[delay_label]
-                delay_group_name = f'{prefix}_{output_label}'
-                aggregate_group_dirs_by_delay(delay_group_name, group_dirs, output_base, delay_label)
+            if include_delays:
+                for delay_label in DELAY_LABELS:
+                    output_label = DELAY_OUTPUT_LABELS[delay_label]
+                    delay_group_name = f'{prefix}_{output_label}'
+                    aggregate_group_dirs_by_delay(delay_group_name, group_dirs, output_base, delay_label)
     else:
         print(f'GROUP_DATA_BASE not found: {GROUP_DATA_BASE}')
 
-    if RUN_IDS:
+    if include_demo_runs and RUN_IDS:
         aggregate_runs_as_group('demo_runs', RUN_IDS, output_base)
 
 
 if __name__ == '__main__':
-    main()
+    parser = argparse.ArgumentParser(
+        description='Aggregate group-level eye-tracking summaries.'
+    )
+    parser.add_argument(
+        '--include-participants',
+        action='store_true',
+        help='Also generate per-participant group visualizations.'
+    )
+    parser.add_argument(
+        '--include-delays',
+        action='store_true',
+        help='Also generate delay-split group visualizations.'
+    )
+    parser.add_argument(
+        '--include-demo-runs',
+        action='store_true',
+        help='Also aggregate RUN_IDS into a demo group.'
+    )
+    args = parser.parse_args()
+
+    main(
+        include_participants=args.include_participants,
+        include_delays=args.include_delays,
+        include_demo_runs=args.include_demo_runs
+    )
