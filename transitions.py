@@ -330,10 +330,12 @@ def _draw_transition_flow(
     transitions,
     surface_order,
     title,
-    grid_color='lightgray',
-    label_color='black',
-    flow_color='steelblue',
-    aspect='equal'
+    grid_color=FLOW_GRAY,
+    label_color=FLOW_GRAY,
+    flow_color=FLOW_DARK_RED,
+    aspect='equal',
+    label_size=10,
+    title_weight='normal'
 ):
     """Draw transition flow map on an existing axis."""
     offsets = _surface_offsets(surface_order)
@@ -345,7 +347,8 @@ def _draw_transition_flow(
         for i in range(grid_size + 1):
             ax.plot([x_off, x_off + grid_size], [y_off + i, y_off + i], color=grid_color, linewidth=0.6)
             ax.plot([x_off + i, x_off + i], [y_off, y_off + grid_size], color=grid_color, linewidth=0.6)
-        ax.text(x_off + 1.5, y_off - 0.4, label, ha='center', va='top', color=label_color)
+        ax.text(x_off + 1.5, y_off - 0.4, label, ha='center', va='top',
+            color=label_color, fontsize=label_size)
 
     for _, row in counts.iterrows():
         start = _aoi_center(row['aoi_id'], offsets, grid_size=grid_size)
@@ -366,7 +369,7 @@ def _draw_transition_flow(
     ax.invert_yaxis()
     ax.set_xticks([])
     ax.set_yticks([])
-    ax.set_title(title)
+    ax.set_title(title, color=label_color, fontweight=title_weight)
     ax.set_frame_on(False)
     for spine in ax.spines.values():
         spine.set_visible(False)
@@ -397,32 +400,15 @@ def visualize_combined_density_and_flow_map(surface_data_map, transitions, outpu
         print("No transitions available; skipping combined density/flow map.")
         return
 
-    label_lookup = {}
-    for label, df in surface_data_map.items():
-        label_lookup[label.lower()] = (label, df)
-
-    def _pick_surface(name):
-        return label_lookup.get(name.lower())
-
-    panels = [
-        (_pick_surface('Left'), (0, 0), 'Left'),
-        (_pick_surface('Mid'), (0, 1), 'Mid'),
-        (_pick_surface('Right'), (0, 2), 'Right'),
-        (_pick_surface('Dashboard'), (1, 1), 'Dashboard'),
-    ]
-
-    present_labels = [entry[0][0] for entry in panels if entry[0] is not None]
-    surface_order = [label for label in ['Left', 'Mid', 'Right', 'Dashboard'] if label in present_labels]
+    surface_order = [label for label in ['Left', 'Mid', 'Right', 'Dashboard'] if label in surface_data_map]
     if not surface_order:
         surface_order = list(surface_data_map.keys())
 
-    fig = plt.figure(figsize=(14, 12), facecolor='black')
-    grid = fig.add_gridspec(4, 3, height_ratios=[1.0, 1.0, 1.0, 1.0], hspace=0.35, wspace=0.22)
+    density_cmap = mcolors.LinearSegmentedColormap.from_list(
+        'density_gray_red', ['#FFFFFF', FLOW_GRAY, FLOW_DARK_RED]
+    )
 
-    empty_top_left = fig.add_subplot(grid[1, 0])
-    empty_top_right = fig.add_subplot(grid[1, 2])
-    empty_top_left.axis('off')
-    empty_top_right.axis('off')
+    fig = plt.figure(figsize=(12, 4), facecolor=FLOW_BG)
 
     def _gaussian_kernel_2d(sigma, size):
         axis = np.arange(size) - (size - 1) / 2.0
@@ -450,66 +436,59 @@ def visualize_combined_density_and_flow_map(surface_data_map, transitions, outpu
         )
         return _smooth_density(hist, sigma=1.6)
 
-    global_points = []
-    for _, df in surface_data_map.items():
-        on_surf = df[df['on_surf'] == True]
-        if not on_surf.empty:
-            on_surf = collapse_fixations(on_surf, group_cols=['fixationid', 'surface'])
-            global_points.append(on_surf[['norm_pos_x', 'norm_pos_y']])
-
-    global_max = 0.0
-    if global_points:
-        all_points = pd.concat(global_points, ignore_index=True)
-        global_max = _density_from_points(all_points).max()
-
-    for panel, (r, c), title in panels:
-        ax = fig.add_subplot(grid[r, c])
-        ax.set_facecolor('black')
-        if panel is None:
-            ax.axis('off')
+    ax_flow = fig.add_subplot(1, 1, 1)
+    ax_flow.set_facecolor(FLOW_BG)
+    offsets = _surface_offsets(surface_order)
+    grid_size = 3
+    flow_points = []
+    for label, df in surface_data_map.items():
+        if label not in offsets:
             continue
+        on_surf = df[df['on_surf'] == True]
+        if on_surf.empty:
+            continue
+        on_surf = collapse_fixations(on_surf, group_cols=['fixationid', 'surface'])
+        x_off, y_off = offsets[label]
+        xs = x_off + on_surf['norm_pos_x'].astype(float).values * grid_size
+        ys = y_off + on_surf['norm_pos_y'].astype(float).values * grid_size
+        flow_points.append(pd.DataFrame({'x': xs, 'y': ys}))
 
-        _, raw_df = panel
-        data = raw_df[raw_df['on_surf'] == True].copy()
-        if not data.empty:
-            data = collapse_fixations(data, group_cols=['fixationid', 'surface'])
-
-        if len(data) >= 2 and global_max > 0:
-            density = _density_from_points(data)
-            ax.imshow(
+    if flow_points:
+        all_points = pd.concat(flow_points, ignore_index=True)
+        max_x = max(pos[0] for pos in offsets.values()) + grid_size + 0.2
+        max_y = max(pos[1] for pos in offsets.values()) + grid_size + 0.2
+        hist, xedges, yedges = np.histogram2d(
+            all_points['x'].values,
+            all_points['y'].values,
+            bins=140,
+            range=[[-0.2, max_x], [-0.8, max_y]]
+        )
+        density = _smooth_density(hist, sigma=1.8)
+        density = np.log1p(density)
+        vmax = np.percentile(density, 99) if density.size else None
+        if vmax and vmax > 0:
+            ax_flow.imshow(
                 density.T,
-                extent=(0, 1, 1, 0),
-                cmap='mako',
+                extent=(-0.2, max_x, max_y, -0.8),
+                cmap=density_cmap,
                 vmin=0,
-                vmax=global_max,
-                interpolation='bilinear'
+                vmax=vmax,
+                interpolation='bilinear',
+                alpha=0.95
             )
-        elif len(data) == 1:
-            ax.scatter(data['norm_pos_x'], data['norm_pos_y'], color='deepskyblue', s=30)
-        else:
-            ax.text(0.5, 0.5, 'No Data', ha='center', va='center', color='white')
-
-        ax.set_xlim(0, 1)
-        ax.set_ylim(0, 1)
-        ax.invert_yaxis()
-        ax.set_title(f'{title} Fixation Density', color='white', fontsize=10)
-        ax.set_xlabel('Normalized X', color='white', fontsize=8)
-        ax.set_ylabel('Normalized Y', color='white', fontsize=8)
-        ax.tick_params(colors='white', labelsize=7)
-
-    ax_flow = fig.add_subplot(grid[2:, :])
-    ax_flow.set_facecolor('black')
     _draw_transition_flow(
         ax_flow,
         transitions,
         surface_order,
         'Transition Flow Map',
-        grid_color='gray',
-        label_color='white',
-        flow_color='deepskyblue',
-        aspect='auto'
+        grid_color=FLOW_GRAY,
+        label_color='black',
+        flow_color=FLOW_DARK_RED,
+        aspect='auto',
+        label_size=12,
+        title_weight='bold'
     )
-    ax_flow.title.set_color('white')
+    ax_flow.title.set_color('black')
 
     os.makedirs(output_dir, exist_ok=True)
     fig.savefig(os.path.join(output_dir, filename), dpi=300, facecolor=fig.get_facecolor(), bbox_inches='tight')
