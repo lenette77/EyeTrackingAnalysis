@@ -17,7 +17,7 @@ from transitions import (
     visualize_combined_density_and_flow_map,
     visualize_cross_transition_density,
     visualize_transition_flow_map,
-    visualize_transition_heatmap,
+    visualize_transition_flow_heatmap,
     _surface_offsets,
 )
 
@@ -63,7 +63,7 @@ def _match_delay_label(session_name):
         return None
     remainder = session_name.split('_', 1)[1].lower()
     for label in DELAY_LABELS:
-        if remainder == label or remainder.startswith(label):
+        if remainder == label or remainder.startswith(f"{label}_"):
             return label
     return None
 
@@ -147,9 +147,13 @@ def _finalize_group(group_name, combined_surface_map, transitions_all, sequences
         transitions_df = pd.concat(transitions_all, ignore_index=True)
         surface_order = [s['label'] for s in SURFACES]
         matrix = create_transition_matrix(transitions_df, output_dir=group_output_dir, surface_order=surface_order)
-        visualize_transition_heatmap(matrix, output_dir=group_output_dir)
-        visualize_transition_flow_map(transitions_df, surface_order, group_output_dir,
-                                      'group_transition_flow_map.png')
+        visualize_transition_flow_heatmap(
+            surface_counts,
+            transitions_df,
+            surface_order,
+            group_output_dir,
+            'group_transition_flow_heatmap.png'
+        )
 
         intra = transitions_df[transitions_df['from_surface'] == transitions_df['to_surface']].copy()
         inter = transitions_df[transitions_df['from_surface'] != transitions_df['to_surface']].copy()
@@ -468,6 +472,7 @@ def main():
     os.makedirs(output_base, exist_ok=True)
 
     if GROUP_DATA_BASE and os.path.isdir(GROUP_DATA_BASE):
+        participant_names = []
         prefix_groups = {'A': [], 'NA': []}
         for name in os.listdir(GROUP_DATA_BASE):
             group_dir = os.path.join(GROUP_DATA_BASE, name)
@@ -475,8 +480,14 @@ def main():
                 continue
             if name.startswith('NA'):
                 prefix_groups['NA'].append(name)
+                participant_names.append(name)
             elif name.startswith('A'):
                 prefix_groups['A'].append(name)
+                participant_names.append(name)
+
+        for participant in participant_names:
+            participant_dir = os.path.join(GROUP_DATA_BASE, participant)
+            aggregate_group(participant, participant_dir, output_base)
 
         for prefix, group_names in prefix_groups.items():
             group_dirs = [os.path.join(GROUP_DATA_BASE, name) for name in group_names]

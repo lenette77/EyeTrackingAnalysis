@@ -227,6 +227,22 @@ def save_participant_summary(summary_rows, output_dir):
     summary_df.to_csv(summary_path, index=False)
     print(f'Saved participant summary to: {summary_path}')
 
+    entropy_cols = [
+        'group',
+        'participant_id',
+        'session_id',
+        'participant',
+        'stationary_entropy_all_screens',
+        'transition_entropy_all_screens',
+        'stationary_entropy_mid',
+        'transition_entropy_mid'
+    ]
+    available_cols = [c for c in entropy_cols if c in summary_df.columns]
+    entropy_df = summary_df[available_cols].copy()
+    entropy_path = os.path.join(output_dir, 'participant_entropy_by_group.csv')
+    entropy_df.to_csv(entropy_path, index=False)
+    print(f'Saved participant entropy summary to: {entropy_path}')
+
 
 def main():
     script_dir = os.path.dirname(os.path.abspath(__file__))
