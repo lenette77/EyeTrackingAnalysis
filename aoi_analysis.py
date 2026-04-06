@@ -2,6 +2,7 @@ import os
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
+from matplotlib import colors as mcolors
 import seaborn as sns
 
 
@@ -219,22 +220,26 @@ def visualize_fixation_density(surface_data, output_dir="output", output_filenam
 
     data = collapse_fixations(data)
 
-    plt.figure(figsize=(6, 5), facecolor='black')
+    density_cmap = mcolors.LinearSegmentedColormap.from_list(
+        'density_gray_red', ['#FFFFFF', '#898989', '#9B0000']
+    )
+
+    plt.figure(figsize=(6, 5), facecolor='white')
     sns.kdeplot(
         data=data,
         x='norm_pos_x',
         y='norm_pos_y',
         fill=True,
         levels=50,
-        cmap='mako',
+        cmap=density_cmap,
         bw_adjust=0.8
     )
     ax = plt.gca()
-    ax.set_facecolor('black')
-    ax.set_title('Fixation Density', color='white')
-    ax.set_xlabel('Normalized X', color='white')
-    ax.set_ylabel('Normalized Y', color='white')
-    ax.tick_params(colors='white')
+    ax.set_facecolor('white')
+    ax.set_title('Fixation Density', color='#898989')
+    ax.set_xlabel('Normalized X', color='#898989')
+    ax.set_ylabel('Normalized Y', color='#898989')
+    ax.tick_params(colors='#898989')
     plt.xlim(0, 1)
     plt.ylim(0, 1)
     plt.gca().invert_yaxis()
@@ -263,14 +268,19 @@ def compute_aoi_summary(aoi_df, output_dir, filename):
     return summary
 
 
-def run_aoi_metrics(surface_data_map, surfaces, output_dir):
+def run_aoi_metrics(surface_data_map, surfaces, output_dir, cached_aoi_data_map=None, cached_combined=None):
     """Compute AOI metrics and return combined AOI data."""
     aoi_data = []
+    aoi_data_map = {}
     for surface in surfaces:
         label = surface["label"]
         df = surface_data_map[label]
-        aoi_df = create_aoi_data_for_surface(df, label)
+        if cached_aoi_data_map and label in cached_aoi_data_map:
+            aoi_df = cached_aoi_data_map[label].copy()
+        else:
+            aoi_df = create_aoi_data_for_surface(df, label)
         aoi_data.append(aoi_df)
+        aoi_data_map[label] = aoi_df
 
         label_slug = label.lower().replace(' ', '_')
         aoi_counts = count_fixations_per_aoi(
@@ -294,6 +304,9 @@ def run_aoi_metrics(surface_data_map, surfaces, output_dir):
             output_filename=f"fixation_density_{label_slug}.png"
         )
 
-    combined = pd.concat(aoi_data).sort_values('world_timestamp')
+    if cached_combined is not None:
+        combined = cached_combined.copy()
+    else:
+        combined = pd.concat(aoi_data).sort_values('world_timestamp')
     compute_aoi_summary(combined, output_dir, filename="aoi_summary.csv")
-    return combined
+    return combined, aoi_data_map

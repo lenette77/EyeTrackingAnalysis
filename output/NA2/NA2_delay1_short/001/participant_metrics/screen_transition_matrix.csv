@@ -1,0 +1,5 @@
+from_surface,Left,Mid,Right,Dashboard
+Left,9,41,0,1
+Mid,41,484,1,5
+Right,1,1,0,0
+Dashboard,0,5,1,5
