@@ -2,9 +2,15 @@ import os
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
+from matplotlib import colors as mcolors
+from matplotlib.patches import Rectangle
 import seaborn as sns
 
-from aoi_analysis import collapse_fixations, assign_aoi
+from aoi_analysis import collapse_fixations, assign_aoi, create_aoi_data
+
+FLOW_GRAY = '#898989'
+FLOW_DARK_RED = '#9B0000'
+FLOW_BG = 'white'
 
 
 def create_transition_sequence(surface_data, output_dir="output"):
@@ -220,6 +226,77 @@ def visualize_transition_heatmap(matrix, output_dir="output", annotate=False):
     plt.close()
 
 
+def visualize_transition_flow_heatmap(surface_counts, transitions, surface_order, output_dir, filename,
+                                      title="Transition Flow Overlay"):
+    """Overlay transition flow lines on top of AOI heatmap counts."""
+    if not surface_counts:
+        print("No AOI counts available; skipping flow heatmap overlay.")
+        return
+    if transitions.empty:
+        print("No transitions to plot; skipping flow heatmap overlay.")
+        return
+
+    surface_order = surface_order or list(surface_counts.keys())
+    offsets = _surface_offsets(surface_order)
+    grid_size = 3
+
+    max_count = 0
+    for counts in surface_counts.values():
+        if counts:
+            max_count = max(max_count, max(counts.values()))
+    max_count = max_count if max_count > 0 else 1
+
+    cmap = mcolors.LinearSegmentedColormap.from_list(
+        'flow_gray_red', ['#FFFFFF', FLOW_GRAY, FLOW_DARK_RED]
+    )
+    norm = mcolors.Normalize(vmin=0, vmax=max_count)
+
+    plt.figure(figsize=(12, 4), facecolor=FLOW_BG)
+    ax = plt.gca()
+    ax.set_facecolor(FLOW_BG)
+    ax.set_aspect('equal')
+
+    for label, (x_off, y_off) in offsets.items():
+        counts = surface_counts.get(label, {})
+        for aoi in range(1, 10):
+            row = (aoi - 1) // 3
+            col = (aoi - 1) % 3
+            count = counts.get(aoi, 0)
+            color = cmap(norm(count))
+            rect = Rectangle((x_off + col, y_off + row), 1, 1,
+                             facecolor=color, edgecolor=FLOW_GRAY, linewidth=0.6)
+            ax.add_patch(rect)
+        ax.text(x_off + 1.5, y_off - 0.4, label, ha='center', va='top', color=FLOW_GRAY)
+
+    counts = transitions.groupby(['aoi_id', 'next_aoi']).size().reset_index(name='count')
+    max_flow = max(counts['count']) if len(counts) else 1
+    for _, row in counts.iterrows():
+        start = _aoi_center(row['aoi_id'], offsets, grid_size=grid_size)
+        end = _aoi_center(row['next_aoi'], offsets, grid_size=grid_size)
+        if start is None or end is None:
+            continue
+        alpha = 0.1 + 0.8 * (row['count'] / max_flow)
+        linewidth = 0.5 + 2.5 * (row['count'] / max_flow)
+        ax.plot([start[0], end[0]], [start[1], end[1]], color=FLOW_DARK_RED, alpha=alpha, linewidth=linewidth)
+
+    max_x = max(pos[0] for pos in offsets.values()) + grid_size + 0.2
+    max_y = max(pos[1] for pos in offsets.values()) + grid_size + 0.2
+    ax.set_xlim(-0.2, max_x)
+    ax.set_ylim(-0.8, max_y)
+    ax.invert_yaxis()
+    ax.set_xticks([])
+    ax.set_yticks([])
+    ax.set_title(title, color=FLOW_GRAY)
+    ax.set_frame_on(False)
+    for spine in ax.spines.values():
+        spine.set_visible(False)
+
+    os.makedirs(output_dir, exist_ok=True)
+    plt.tight_layout()
+    plt.savefig(os.path.join(output_dir, filename), dpi=300)
+    plt.close()
+
+
 def _surface_offsets(surface_order, grid_size=3, gap=1):
     surface_set = set(surface_order)
     if {'Left', 'Mid', 'Right', 'Dashboard'}.issubset(surface_set):
@@ -330,9 +407,9 @@ def _draw_transition_flow(
     transitions,
     surface_order,
     title,
-    grid_color='lightgray',
-    label_color='black',
-    flow_color='steelblue',
+    grid_color=FLOW_GRAY,
+    label_color=FLOW_GRAY,
+    flow_color=FLOW_DARK_RED,
     aspect='equal'
 ):
     """Draw transition flow map on an existing axis."""
@@ -366,7 +443,7 @@ def _draw_transition_flow(
     ax.invert_yaxis()
     ax.set_xticks([])
     ax.set_yticks([])
-    ax.set_title(title)
+    ax.set_title(title, color=label_color)
     ax.set_frame_on(False)
     for spine in ax.spines.values():
         spine.set_visible(False)
@@ -378,8 +455,9 @@ def visualize_transition_flow_map(transitions, surface_order, output_dir, filena
         print("No transitions to plot; skipping flow map.")
         return
 
-    plt.figure(figsize=(12, 4))
+    plt.figure(figsize=(12, 4), facecolor=FLOW_BG)
     ax = plt.gca()
+    ax.set_facecolor(FLOW_BG)
     _draw_transition_flow(ax, transitions, surface_order, title)
 
     os.makedirs(output_dir, exist_ok=True)
@@ -416,7 +494,11 @@ def visualize_combined_density_and_flow_map(surface_data_map, transitions, outpu
     if not surface_order:
         surface_order = list(surface_data_map.keys())
 
-    fig = plt.figure(figsize=(14, 12), facecolor='black')
+    density_cmap = mcolors.LinearSegmentedColormap.from_list(
+        'density_gray_red', ['#FFFFFF', FLOW_GRAY, FLOW_DARK_RED]
+    )
+
+    fig = plt.figure(figsize=(14, 12), facecolor=FLOW_BG)
     grid = fig.add_gridspec(4, 3, height_ratios=[1.0, 1.0, 1.0, 1.0], hspace=0.35, wspace=0.22)
 
     empty_top_left = fig.add_subplot(grid[1, 0])
@@ -450,21 +532,19 @@ def visualize_combined_density_and_flow_map(surface_data_map, transitions, outpu
         )
         return _smooth_density(hist, sigma=1.6)
 
-    global_points = []
-    for _, df in surface_data_map.items():
+    per_surface_max = {}
+    for label, df in surface_data_map.items():
         on_surf = df[df['on_surf'] == True]
-        if not on_surf.empty:
-            on_surf = collapse_fixations(on_surf, group_cols=['fixationid', 'surface'])
-            global_points.append(on_surf[['norm_pos_x', 'norm_pos_y']])
-
-    global_max = 0.0
-    if global_points:
-        all_points = pd.concat(global_points, ignore_index=True)
-        global_max = _density_from_points(all_points).max()
+        if on_surf.empty:
+            continue
+        on_surf = collapse_fixations(on_surf, group_cols=['fixationid', 'surface'])
+        density = _density_from_points(on_surf)
+        if density.size:
+            per_surface_max[label] = np.percentile(density, 99)
 
     for panel, (r, c), title in panels:
         ax = fig.add_subplot(grid[r, c])
-        ax.set_facecolor('black')
+        ax.set_facecolor(FLOW_BG)
         if panel is None:
             ax.axis('off')
             continue
@@ -474,42 +554,81 @@ def visualize_combined_density_and_flow_map(surface_data_map, transitions, outpu
         if not data.empty:
             data = collapse_fixations(data, group_cols=['fixationid', 'surface'])
 
-        if len(data) >= 2 and global_max > 0:
+        vmax = per_surface_max.get(panel[0])
+        if len(data) >= 2 and vmax and vmax > 0:
             density = _density_from_points(data)
             ax.imshow(
                 density.T,
                 extent=(0, 1, 1, 0),
-                cmap='mako',
+                cmap=density_cmap,
                 vmin=0,
-                vmax=global_max,
+                vmax=vmax,
                 interpolation='bilinear'
             )
         elif len(data) == 1:
-            ax.scatter(data['norm_pos_x'], data['norm_pos_y'], color='deepskyblue', s=30)
+            ax.scatter(data['norm_pos_x'], data['norm_pos_y'], color=FLOW_DARK_RED, s=30)
         else:
-            ax.text(0.5, 0.5, 'No Data', ha='center', va='center', color='white')
+            ax.text(0.5, 0.5, 'No Data', ha='center', va='center', color=FLOW_GRAY)
 
         ax.set_xlim(0, 1)
         ax.set_ylim(0, 1)
         ax.invert_yaxis()
-        ax.set_title(f'{title} Fixation Density', color='white', fontsize=10)
-        ax.set_xlabel('Normalized X', color='white', fontsize=8)
-        ax.set_ylabel('Normalized Y', color='white', fontsize=8)
-        ax.tick_params(colors='white', labelsize=7)
+        ax.set_title(f'{title} Fixation Density', color=FLOW_GRAY, fontsize=10)
+        ax.set_xlabel('Normalized X', color=FLOW_GRAY, fontsize=8)
+        ax.set_ylabel('Normalized Y', color=FLOW_GRAY, fontsize=8)
+        ax.tick_params(colors=FLOW_GRAY, labelsize=7)
 
     ax_flow = fig.add_subplot(grid[2:, :])
-    ax_flow.set_facecolor('black')
+    ax_flow.set_facecolor(FLOW_BG)
+    offsets = _surface_offsets(surface_order)
+    grid_size = 3
+    flow_points = []
+    for label, df in surface_data_map.items():
+        if label not in offsets:
+            continue
+        on_surf = df[df['on_surf'] == True]
+        if on_surf.empty:
+            continue
+        on_surf = collapse_fixations(on_surf, group_cols=['fixationid', 'surface'])
+        x_off, y_off = offsets[label]
+        xs = x_off + on_surf['norm_pos_x'].astype(float).values * grid_size
+        ys = y_off + on_surf['norm_pos_y'].astype(float).values * grid_size
+        flow_points.append(pd.DataFrame({'x': xs, 'y': ys}))
+
+    if flow_points:
+        all_points = pd.concat(flow_points, ignore_index=True)
+        max_x = max(pos[0] for pos in offsets.values()) + grid_size + 0.2
+        max_y = max(pos[1] for pos in offsets.values()) + grid_size + 0.2
+        hist, xedges, yedges = np.histogram2d(
+            all_points['x'].values,
+            all_points['y'].values,
+            bins=140,
+            range=[[-0.2, max_x], [-0.8, max_y]]
+        )
+        density = _smooth_density(hist, sigma=1.8)
+        density = np.log1p(density)
+        vmax = np.percentile(density, 99) if density.size else None
+        if vmax and vmax > 0:
+            ax_flow.imshow(
+                density.T,
+                extent=(-0.2, max_x, max_y, -0.8),
+                cmap=density_cmap,
+                vmin=0,
+                vmax=vmax,
+                interpolation='bilinear',
+                alpha=0.95
+            )
     _draw_transition_flow(
         ax_flow,
         transitions,
         surface_order,
         'Transition Flow Map',
-        grid_color='gray',
-        label_color='white',
-        flow_color='deepskyblue',
+        grid_color=FLOW_GRAY,
+        label_color=FLOW_GRAY,
+        flow_color=FLOW_DARK_RED,
         aspect='auto'
     )
-    ax_flow.title.set_color('white')
+    ax_flow.title.set_color(FLOW_GRAY)
 
     os.makedirs(output_dir, exist_ok=True)
     fig.savefig(os.path.join(output_dir, filename), dpi=300, facecolor=fig.get_facecolor(), bbox_inches='tight')
@@ -544,17 +663,22 @@ def visualize_cross_transition_density(transitions, surface_order, output_dir, f
         print("Not enough cross-surface transitions for density map; skipping.")
         return
 
-    plt.figure(figsize=(12, 4))
+    density_cmap = mcolors.LinearSegmentedColormap.from_list(
+        'cross_gray_red', ['#FFFFFF', FLOW_GRAY, FLOW_DARK_RED]
+    )
+
+    plt.figure(figsize=(12, 4), facecolor=FLOW_BG)
     ax = plt.gca()
+    ax.set_facecolor(FLOW_BG)
     ax.set_aspect('equal')
 
     for label, (x_off, y_off) in offsets.items():
         for i in range(grid_size + 1):
-            ax.plot([x_off, x_off + grid_size], [y_off + i, y_off + i], color='lightgray', linewidth=0.6)
-            ax.plot([x_off + i, x_off + i], [y_off, y_off + grid_size], color='lightgray', linewidth=0.6)
-        ax.text(x_off + 1.5, y_off - 0.4, label, ha='center', va='top')
+            ax.plot([x_off, x_off + grid_size], [y_off + i, y_off + i], color=FLOW_GRAY, linewidth=0.6)
+            ax.plot([x_off + i, x_off + i], [y_off, y_off + grid_size], color=FLOW_GRAY, linewidth=0.6)
+        ax.text(x_off + 1.5, y_off - 0.4, label, ha='center', va='top', color=FLOW_GRAY)
 
-    sns.kdeplot(x=mids_x, y=mids_y, fill=True, cmap='mako', thresh=0.05, levels=20, alpha=0.8)
+    sns.kdeplot(x=mids_x, y=mids_y, fill=True, cmap=density_cmap, thresh=0.05, levels=20, alpha=0.8)
     max_x = max(pos[0] for pos in offsets.values()) + grid_size + 0.2
     max_y = max(pos[1] for pos in offsets.values()) + grid_size + 0.2
     ax.set_xlim(-0.2, max_x)
@@ -562,7 +686,7 @@ def visualize_cross_transition_density(transitions, surface_order, output_dir, f
     ax.invert_yaxis()
     ax.set_xticks([])
     ax.set_yticks([])
-    ax.set_title('Cross-Surface Transition Density')
+    ax.set_title('Cross-Surface Transition Density', color=FLOW_GRAY)
 
     os.makedirs(output_dir, exist_ok=True)
     plt.tight_layout()
@@ -591,10 +715,27 @@ def run_transition_analysis(combined, surface_order, output_dir, surface_data_ma
     """Compute transition tables and visualizations."""
     transitions = create_transition_sequence(combined, output_dir)
     matrix = create_transition_matrix(transitions, output_dir, surface_order=surface_order)
-    visualize_transition_heatmap(matrix, output_dir)
     visualize_transition_path(combined, surface_order, output_dir, output_filename="transition_path.png")
-    visualize_transition_flow_map(transitions, surface_order, output_dir,
-                                 filename="transition_flow_map.png")
+    if surface_data_map is not None:
+        surface_counts = {}
+        for label, df in surface_data_map.items():
+            if df is None or df.empty:
+                continue
+            aoi_df = create_aoi_data(df)
+            counts = aoi_df.groupby('aoi')['fixationid'].nunique()
+            surface_counts[label] = counts.to_dict()
+
+        visualize_transition_flow_heatmap(
+            surface_counts,
+            transitions,
+            surface_order,
+            output_dir,
+            filename="transition_flow_heatmap.png"
+        )
+    else:
+        visualize_transition_heatmap(matrix, output_dir)
+        visualize_transition_flow_map(transitions, surface_order, output_dir,
+                                     filename="transition_flow_map.png")
 
     if 'from_surface' in transitions.columns and 'to_surface' in transitions.columns:
         intra = transitions[transitions['from_surface'] == transitions['to_surface']].copy()
